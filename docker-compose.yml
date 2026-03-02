@@ -1,0 +1,21 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    volumes:
+      - db-data:/app/data
+    environment:
+      - CRYPTO_TAX_DB_PATH=/app/data/crypto_tax.db
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  db-data:

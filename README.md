@@ -13,28 +13,57 @@ I was tired of paying for Crypto tax software that charged based on the number o
 - Python 3.13+
 - Node.js 20+
 - npm 10+
+- Docker (optional -- for containerized deployment)
 
 ## Quick Start
 
-From the project root (`crypto-tax-app/`), you can use the Makefile shortcuts:
+```bash
+# Install dependencies
+make install            # Create Python venv + install backend deps
+make frontend-install   # Install frontend npm packages
+
+# Run everything (background processes, logs to logs/)
+make run
+
+# Stop everything
+make stop
+```
+
+Backend API: http://127.0.0.1:8000 | Frontend UI: http://localhost:5173
+
+## Docker
+
+Run the entire app in Docker with a single command:
 
 ```bash
-# Backend
-make install          # Create venv and install backend dependencies
-make run              # Start the backend API server
-make test             # Run backend tests with coverage
-make migrate          # Run database migrations
-make clean            # Remove __pycache__ and database files
-
-# Frontend
-make frontend-install # Install frontend npm dependencies
-make frontend-dev     # Start the frontend dev server
-make frontend-build   # Production build
-make frontend-test    # Run frontend tests with coverage
-
-# Both
-make dev              # Start backend + frontend together (requires two terminals)
+docker compose up -d
 ```
+
+Open http://localhost:3000 in your browser. The frontend and API are served through nginx. SQLite data persists in a Docker named volume.
+
+```bash
+docker compose down        # Stop containers, keep data
+docker compose down -v     # Stop containers and delete database
+docker compose logs -f     # Tail logs
+```
+
+## Make Targets
+
+| Target | Description |
+|--------|-------------|
+| `make install` | Create Python venv and install backend dependencies |
+| `make frontend-install` | Install frontend npm packages |
+| `make run` | Start backend + frontend in background, print PIDs |
+| `make run-backend` | Start backend only (background, logs to `logs/backend.log`) |
+| `make run-frontend` | Start frontend only (background, logs to `logs/frontend.log`) |
+| `make stop` | Stop backend and frontend processes |
+| `make test` | Run backend tests with coverage |
+| `make frontend-test` | Run frontend tests with coverage |
+| `make frontend-build` | Production build of frontend |
+| `make migrate` | Run database migrations (`alembic upgrade head`) |
+| `make migrate-generate msg="..."` | Auto-generate a new migration |
+| `make migrate-downgrade` | Roll back one migration |
+| `make clean` | Remove caches, database files, and logs |
 ## Individual Service Start
 
 ### 1. Backend Setup
@@ -79,7 +108,7 @@ Navigate to `http://localhost:5173` in your browser.
 
 ## Running Tests
 
-### Backend (656 tests, 88% coverage)
+### Backend (665 tests, 90% coverage)
 
 ```bash
 cd backend
@@ -116,7 +145,7 @@ See [koinly-scraper/README.md](koinly-scraper/README.md) for full setup and usag
 ## Project Structure
 
 ```
-crypto-tax-app/
+OpenCoinTax/
 ├── backend/
 │   ├── app/
 │   │   ├── api/              # FastAPI route handlers
@@ -172,7 +201,7 @@ crypto-tax-app/
 │   │   │   ├── balance_reconciler.py
 │   │   │   ├── missing_basis_checker.py
 │   │   │   └── dedup.py           # Transaction deduplication
-│   │   └── tests/            # 656 tests, 88% coverage
+│   │   └── tests/            # 665 tests, 90% coverage
 │   │       ├── conftest.py         # Fixtures and test DB setup
 │   │       ├── factories.py        # Test entity factories
 │   │       ├── test_tax/           # Tax engine tests
@@ -203,7 +232,9 @@ crypto-tax-app/
 │   ├── scraper.js            # Browser console script
 │   ├── json_to_csv.py        # Reprocess raw JSON into CSVs
 │   └── README.md
-└── Makefile
+├── docker-compose.yml        # Docker orchestration
+├── Makefile
+└── LICENSE
 ```
 
 ## Features
@@ -335,7 +366,7 @@ Bitcoin, Cosmos, and Litecoin work without any API keys.
 
 - **Backend:** Python 3.13, FastAPI, SQLAlchemy, SQLite, Alembic
 - **Frontend:** React 19, TypeScript, Vite 7, Tailwind CSS v4, React Router v7, Recharts
-- **Testing:** pytest (656 tests, 88% coverage), Vitest (239 tests, 91% coverage)
+- **Testing:** pytest (665 tests, 90% coverage), Vitest (239 tests, 91% coverage)
 
 ## License
 
