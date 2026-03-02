@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+venv/
+.venv/
+
+# SQLite
+*.db
+*.db-wal
+*.db-shm
+
+# Data directory (database, browser profiles, etc.)
+backend/data/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+*.env
+
+# Coverage
+htmlcov/
+.coverage
+coverage.xml
+frontend/coverage/
+
+# pytest
+.pytest_cache/
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Koinly scraper output (generated data -- never commit)
+koinly-scraper/*.csv
+koinly-scraper/*.json
+koinly-scraper/output/
+koinly-scraper/auth.json
+
+# User data files (imported CSVs, PDFs, etc.)
+*.pdf
+
+# OpenSpec workflow files (development tooling, not application code)
+openspec/
+backend/openspec/

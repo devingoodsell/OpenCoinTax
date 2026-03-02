@@ -1,0 +1,8 @@
+Operation Date,Status,Currency Ticker,Operation Type,Operation Amount,Operation Fees,Operation Hash,Account Name,Account xpub,Countervalue Ticker,Countervalue at Operation Date,Countervalue at CSV Export
+2024-06-15T10:30:00.000Z,Confirmed,BTC,IN,0.5,0,abc123hash,L1-Bitcoin,xpub6DLpq2zCmWs7o2nN,USD,25000.00,24000.00
+2024-06-10T14:00:00.000Z,Confirmed,BTC,OUT,0.1,0.00001,def456hash,L1-Bitcoin,xpub6DLpq2zCmWs7o2nN,USD,5000.00,4800.00
+2024-05-01T08:00:00.000Z,Confirmed,ETH,IN,10.0,0,eth789hash,L1-Ethereum,0xABCD1234,USD,30000.00,29000.00
+2024-04-15T12:00:00.000Z,Confirmed,SOL,DELEGATE,0.00001,0.00001,del123hash,L1-Solana,SOLaddr123,USD,0.01,0.01
+2024-04-10T09:00:00.000Z,Confirmed,ATOM,REWARD,0.5,0,reward456hash,L1-Cosmos,cosmos1abc,USD,5.00,4.50
+2024-03-01T15:00:00.000Z,Confirmed,ETH,FEES,0,0.001,fees789hash,L1-Ethereum,0xABCD1234,USD,2.00,1.90
+2024-07-01T12:00:00.000Z,Confirmed,ETH,IN,1.906721,0,wrap_eth_hash,L1-Ethereum,0xABCD1234,USD,7297.00,7000.00

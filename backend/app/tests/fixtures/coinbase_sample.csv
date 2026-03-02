@@ -1,0 +1,5 @@
+Timestamp,Transaction Type,Asset,Quantity Transacted,Spot Price Currency,Spot Price at Transaction,Subtotal,Total (inclusive of fees and/or spread),Fees and/or Spread,Notes
+2025-01-10T14:30:00Z,Buy,BTC,0.5,USD,30000.00,15000.00,15050.00,50.00,Bought Bitcoin
+2025-02-15T09:00:00Z,Sell,BTC,0.25,USD,35000.00,8750.00,8725.00,25.00,Sold Bitcoin
+2025-03-01T12:00:00Z,Staking Income,ETH,0.005,USD,3000.00,15.00,15.00,0.00,Ethereum staking reward
+2025-04-01T10:00:00Z,Convert,ETH,1.0,USD,3000.00,3000.00,3010.00,10.00,Converted ETH

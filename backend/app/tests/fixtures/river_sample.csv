@@ -1,0 +1,5 @@
+Date,Type,Amount (BTC),Amount (USD),Description,Transaction ID
+2025-01-05,Purchase,0.1,3000.00,Bought BTC,riv001
+2025-02-10,Purchase,0.05,1750.00,Bought BTC,riv002
+2025-03-20,Withdrawal,0.08,,Withdrawal to cold storage,riv003
+2025-04-15,Sell,0.03,1200.00,Sold BTC,riv004

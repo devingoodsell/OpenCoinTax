@@ -1,0 +1,5 @@
+Date,Sent Amount,Sent Currency,Received Amount,Received Currency,Fee Amount,Fee Currency,Net Worth Amount,Net Worth Currency,Label,Description,TxHash
+2025-01-15 12:00:00 UTC,30000.00,USD,1.0,BTC,5.00,USD,30000.00,USD,,Bought BTC on Coinbase,abc123
+2025-02-01 08:30:00 UTC,,,0.01,ETH,,,30.00,USD,staking,Staking reward,def456
+2025-03-15 14:00:00 UTC,0.5,BTC,,USD,2.00,USD,20000.00,USD,,Sold BTC,ghi789
+2025-04-01 10:00:00 UTC,1.0,ETH,0.05,BTC,0.01,ETH,3000.00,USD,,Swapped ETH for BTC,jkl012
