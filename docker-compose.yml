@@ -3,7 +3,7 @@ services:
     build:
       context: ./backend
     volumes:
-      - db-data:/app/data
+      - ./backend/data:/app/data
     environment:
       - CRYPTO_TAX_DB_PATH=/app/data/crypto_tax.db
     restart: unless-stopped
@@ -16,6 +16,3 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
-
-volumes:
-  db-data:
