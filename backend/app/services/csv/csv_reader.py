@@ -6,6 +6,7 @@ import io
 from app.services.csv import ParsedRow, ParseResult
 from app.services.csv.csv_validator import (
     _parse_row,
+    _postprocess_koinly_row,
     _postprocess_ledger_row,
     _postprocess_coinbase_row,
 )
@@ -59,11 +60,16 @@ def parse_csv(
     rows: list[ParsedRow] = []
     valid = warning = error = 0
 
+    is_koinly = detected == "koinly_universal"
     is_ledger = detected == "ledger"
     is_coinbase = detected == "coinbase"
 
     for i, csv_row in enumerate(reader, start=2):  # row 1 = headers
         parsed = _parse_row(csv_row, i, preset, date_format)
+
+        # Koinly-specific post-processing (derive USD values from fiat amounts)
+        if is_koinly and parsed.status != "error":
+            _postprocess_koinly_row(parsed, csv_row)
 
         # Ledger-specific post-processing
         if is_ledger and parsed.status != "error":

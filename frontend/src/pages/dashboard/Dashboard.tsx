@@ -55,6 +55,7 @@ export default function Dashboard() {
   const [backfilling, setBackfilling] = useState(false);
   const [hiddenAssets, setHiddenAssets] = useState<{ id: number; symbol: string; name: string | null }[]>([]);
   const [showHidden, setShowHidden] = useState(false);
+  const [priceWarnings, setPriceWarnings] = useState<string[]>([]);
 
   function load(sd: string, ed: string) {
     setLoading(true);
@@ -96,12 +97,26 @@ export default function Dashboard() {
 
   async function handleRefreshPrices() {
     setRefreshingPrices(true);
-    try { await refreshCurrentPrices(); load(startDate, endDate); } catch {} finally { setRefreshingPrices(false); }
+    setPriceWarnings([]);
+    try {
+      const resp = await refreshCurrentPrices();
+      if (resp.data.warnings && resp.data.warnings.length > 0) {
+        setPriceWarnings(resp.data.warnings);
+      }
+      load(startDate, endDate);
+    } catch {} finally { setRefreshingPrices(false); }
   }
 
   async function handleBackfill() {
     setBackfilling(true);
-    try { await backfillPrices(); load(startDate, endDate); } catch { setError("Failed to backfill prices"); } finally { setBackfilling(false); }
+    setPriceWarnings([]);
+    try {
+      const resp = await backfillPrices();
+      if (resp.data.warnings && resp.data.warnings.length > 0) {
+        setPriceWarnings(resp.data.warnings);
+      }
+      load(startDate, endDate);
+    } catch { setError("Failed to backfill prices"); } finally { setBackfilling(false); }
   }
 
   function selectPreset(p: Preset) { setActivePreset(p); const [s, e] = presetRange(p); setStartDate(s); setEndDate(e); }
@@ -175,6 +190,18 @@ export default function Dashboard() {
           <Link to="/transactions?has_errors=true" className="px-3 py-1.5 rounded text-sm font-medium transition-colors cursor-pointer" style={{ border: "1px solid var(--danger)", color: "var(--danger)" }}
             onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--danger)"; e.currentTarget.style.color = "#fff"; }}
             onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = "var(--danger)"; }}>View Errors</Link>
+        </div>
+      )}
+
+      {priceWarnings.length > 0 && (
+        <div className="glass-card p-4 mb-4 flex items-start justify-between" style={{ borderLeft: "4px solid var(--warning, #eab308)" }}>
+          <div>
+            <div className="font-semibold text-sm" style={{ color: "var(--warning, #eab308)" }}>Price Warnings</div>
+            {priceWarnings.map((w, i) => (
+              <div key={i} className="text-xs mt-1" style={{ color: "var(--text-secondary)" }}>{w}</div>
+            ))}
+          </div>
+          <button onClick={() => setPriceWarnings([])} className="text-xs px-2 py-1 rounded transition-colors ml-4 shrink-0" style={{ backgroundColor: "var(--bg-surface)", color: "var(--text-muted)", border: "1px solid var(--border-default)" }}>Dismiss</button>
         </div>
       )}
 

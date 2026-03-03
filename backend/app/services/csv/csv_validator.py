@@ -127,6 +127,38 @@ def _parse_row(csv_row: dict, row_num: int, preset: CsvPreset, date_format: str 
     return parsed
 
 
+_FIAT_CURRENCIES = {"USD", "EUR", "GBP", "CAD", "AUD", "JPY", "CHF"}
+
+
+def _postprocess_koinly_row(parsed: ParsedRow, csv_row: dict) -> None:
+    """Apply Koinly-specific post-processing after generic parsing.
+
+    Derives USD values from fiat amounts:
+    - Buy (sent fiat, received crypto): net/to/from_value_usd = fiat sent
+    - Sell (sent crypto, received fiat): net/from/to_value_usd = fiat received
+    """
+    from_asset = (parsed.from_asset or "").upper()
+    to_asset = (parsed.to_asset or "").upper()
+
+    # Buy: sent fiat → received crypto. The USD value is the fiat sent.
+    if parsed.from_amount and from_asset in _FIAT_CURRENCIES:
+        if not parsed.net_value_usd:
+            parsed.net_value_usd = parsed.from_amount
+        if not parsed.to_value_usd:
+            parsed.to_value_usd = parsed.from_amount
+        if not parsed.from_value_usd:
+            parsed.from_value_usd = parsed.from_amount
+
+    # Sell: sent crypto → received fiat. The USD value is the fiat received.
+    if parsed.to_amount and to_asset in _FIAT_CURRENCIES:
+        if not parsed.net_value_usd:
+            parsed.net_value_usd = parsed.to_amount
+        if not parsed.from_value_usd:
+            parsed.from_value_usd = parsed.to_amount
+        if not parsed.to_value_usd:
+            parsed.to_value_usd = parsed.to_amount
+
+
 def _postprocess_ledger_row(parsed: ParsedRow, csv_row: dict) -> None:
     """Apply Ledger Live-specific transformations after generic parsing.
 

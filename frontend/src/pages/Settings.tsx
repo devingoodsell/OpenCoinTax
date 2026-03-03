@@ -4,6 +4,12 @@ import { useApiQuery } from "../hooks/useApiQuery";
 import LoadingSpinner from "../components/LoadingSpinner";
 import ErrorBanner from "../components/ErrorBanner";
 
+const API_KEY_FIELDS = [
+  { key: "etherscan_api_key", label: "Etherscan API Key", help: "Used for syncing Ethereum wallet transactions" },
+  { key: "helius_api_key", label: "Helius API Key", help: "Used for syncing Solana wallet transactions" },
+  { key: "coingecko_api_key", label: "CoinGecko Pro API Key", help: "Optional — enables higher rate limits for price data" },
+];
+
 export default function Settings() {
   const { data: initialSettings, loading, error: loadError } = useApiQuery(
     () => fetchSettings().then((r) => r.data as Record<string, string>),
@@ -14,6 +20,7 @@ export default function Settings() {
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [visibleKeys, setVisibleKeys] = useState<Record<string, boolean>>({});
 
   if (initialSettings && !initialized) {
     setSettings(initialSettings);
@@ -31,6 +38,10 @@ export default function Settings() {
   function update(key: string, value: string) {
     setSettings((prev) => ({ ...prev, [key]: value }));
     setSaved(false);
+  }
+
+  function toggleVisibility(key: string) {
+    setVisibleKeys((prev) => ({ ...prev, [key]: !prev[key] }));
   }
 
   if (loading) return <LoadingSpinner />;
@@ -87,6 +98,45 @@ export default function Settings() {
           onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = "var(--accent)"; }}
         >
           Save Settings
+        </button>
+      </div>
+
+      <div className="glass-card p-5 mb-6">
+        <h2 className="font-semibold mb-3" style={{ color: "var(--text-primary)" }}>API Keys</h2>
+        <p className="text-xs mb-4" style={{ color: "var(--text-muted)" }}>
+          API keys are stored in the database and used for blockchain syncing and price data. They can also be set via environment variables (CRYPTO_TAX_*).
+        </p>
+        {API_KEY_FIELDS.map(({ key, label, help }) => (
+          <div className="mb-4" key={key}>
+            <label className="text-sm block mb-1" style={{ color: "var(--text-secondary)" }}>{label}</label>
+            <div className="flex gap-2">
+              <input
+                type={visibleKeys[key] ? "text" : "password"}
+                value={settings[key] || ""}
+                onChange={(e) => update(key, e.target.value)}
+                placeholder="Not set"
+                className="rounded px-2 py-1.5 text-sm flex-1"
+              />
+              <button
+                type="button"
+                onClick={() => toggleVisibility(key)}
+                className="px-2 py-1 rounded text-xs transition-colors"
+                style={{ backgroundColor: "var(--bg-surface)", color: "var(--text-muted)", border: "1px solid var(--border-default)" }}
+              >
+                {visibleKeys[key] ? "Hide" : "Show"}
+              </button>
+            </div>
+            <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>{help}</p>
+          </div>
+        ))}
+        <button
+          onClick={handleSave}
+          className="px-4 py-2 rounded text-sm transition-colors cursor-pointer"
+          style={{ border: "1px solid var(--accent)", color: "var(--accent)" }}
+          onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--accent)"; e.currentTarget.style.color = "#fff"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = "var(--accent)"; }}
+        >
+          Save API Keys
         </button>
       </div>
 

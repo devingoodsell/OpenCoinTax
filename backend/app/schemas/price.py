@@ -32,12 +32,14 @@ class FetchMissingResponse(BaseModel):
     fetched: int
     failed: int
     already_present: int
+    warnings: list[str] = []
 
 
 class RefreshCurrentResponse(BaseModel):
     updated: int
     failed: int
     skipped: int
+    warnings: list[str] = []
 
 
 class BackfillResponse(BaseModel):
@@ -46,3 +48,4 @@ class BackfillResponse(BaseModel):
     assets_failed: int
     assets_skipped: int = 0
     assets_mapped: int
+    warnings: list[str] = []

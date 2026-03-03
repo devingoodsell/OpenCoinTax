@@ -57,8 +57,11 @@ def import_parsed_rows(
         to_wallet = None
         tx_type = row.tx_type or "buy"
 
-        if tx_type in ("buy", "deposit", "staking_reward", "interest", "airdrop",
-                        "fork", "mining", "gift_received"):
+        if tx_type == "buy":
+            from_wallet = wallet_id
+            to_wallet = wallet_id
+        elif tx_type in ("deposit", "staking_reward", "interest", "airdrop",
+                          "fork", "mining", "gift_received"):
             to_wallet = wallet_id
         elif tx_type in ("sell", "cost", "gift_sent", "lost", "fee", "withdrawal"):
             from_wallet = wallet_id

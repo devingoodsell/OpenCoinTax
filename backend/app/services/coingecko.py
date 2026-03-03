@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.asset import Asset
 from app.models.price_history import PriceHistory
+from app.services.api_keys import get_api_key
 from app.services.price_service import PriceService
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,45 @@ SYMBOL_TO_COINGECKO: dict[str, str] = {
 }
 
 
+def _coingecko_client_kwargs(db: Session) -> dict:
+    """Return base_url and headers for CoinGecko API calls.
+
+    If a coingecko_api_key is configured, use the Pro API endpoint.
+    """
+    api_key = get_api_key(db, "coingecko_api_key")
+    if api_key:
+        return {
+            "base_url": "https://pro-api.coingecko.com/api/v3",
+            "headers": {"x-cg-pro-api-key": api_key},
+        }
+    return {
+        "base_url": settings.coingecko_api_base,
+        "headers": {},
+    }
+
+
+def _collect_unmapped_warnings(db: Session) -> list[str]:
+    """Collect warnings for non-hidden, non-fiat assets with open lots but no coingecko_id."""
+    from app.models import TaxLot
+
+    unmapped = (
+        db.query(Asset.symbol)
+        .join(TaxLot, TaxLot.asset_id == Asset.id)
+        .filter(
+            TaxLot.is_fully_disposed == False,
+            Asset.is_fiat == False,
+            Asset.is_hidden == False,
+            ((Asset.coingecko_id == None) | (Asset.coingecko_id == "")),
+        )
+        .distinct()
+        .all()
+    )
+    symbols = sorted(row[0] for row in unmapped)
+    if symbols:
+        return [f"No price data available for: {', '.join(symbols)} (missing CoinGecko mapping)"]
+    return []
+
+
 def auto_map_coingecko_ids(db: Session) -> int:
     """Auto-populate coingecko_id for assets using the well-known mapping.
 
@@ -176,8 +216,9 @@ def fetch_price(coingecko_id: str, target_date: date) -> Decimal | None:
 def fetch_missing_prices(db: Session, tax_year: int) -> dict:
     """Find all missing prices for a tax year, fetch from CoinGecko, store results.
 
-    Returns {"fetched": int, "failed": int, "already_present": int}.
+    Returns {"fetched": int, "failed": int, "already_present": int, "warnings": [...]}.
     """
+    warnings = _collect_unmapped_warnings(db)
     missing = PriceService.get_missing_prices(db, tax_year)
 
     fetched = 0
@@ -231,7 +272,7 @@ def fetch_missing_prices(db: Session, tax_year: int) -> dict:
                 target_date,
             )
 
-    return {"fetched": fetched, "failed": failed, "already_present": already_present}
+    return {"fetched": fetched, "failed": failed, "already_present": already_present, "warnings": warnings}
 
 
 def fetch_current_prices(coingecko_ids: list[str]) -> dict[str, Decimal]:
@@ -277,12 +318,15 @@ def fetch_current_prices(coingecko_ids: list[str]) -> dict[str, Decimal]:
 def refresh_current_prices(db: Session) -> dict:
     """Fetch current prices for all held non-fiat assets and store them.
 
-    Returns {"updated": int, "failed": int, "skipped": int, "mapped": int}.
+    Returns {"updated": int, "failed": int, "skipped": int, "mapped": int, "warnings": [...]}.
     """
     from app.models import TaxLot
 
     # Auto-map coingecko_ids for known symbols first
     mapped = auto_map_coingecko_ids(db)
+
+    # Collect warnings for assets that can't be priced
+    warnings = _collect_unmapped_warnings(db)
 
     # Find all assets with open tax lots, non-fiat, with coingecko_id
     held_assets = (
@@ -299,7 +343,7 @@ def refresh_current_prices(db: Session) -> dict:
     )
 
     if not held_assets:
-        return {"updated": 0, "failed": 0, "skipped": 0}
+        return {"updated": 0, "failed": 0, "skipped": 0, "warnings": warnings}
 
     # Build mapping from coingecko_id to asset
     cg_to_assets: dict[str, list[Asset]] = {}
@@ -330,7 +374,7 @@ def refresh_current_prices(db: Session) -> dict:
             else:
                 skipped += 1
 
-    return {"updated": updated, "failed": failed, "skipped": skipped, "mapped": mapped}
+    return {"updated": updated, "failed": failed, "skipped": skipped, "mapped": mapped, "warnings": warnings}
 
 
 def _fetch_chart_chunk(coingecko_id: str, days: int, retries: int = 2) -> list[tuple[date, Decimal]] | None:
@@ -405,7 +449,7 @@ def backfill_historical_prices(db: Session, deadline_seconds: float = 240) -> di
     Auto-maps CoinGecko IDs for known symbols before fetching.
     Stops processing new assets once deadline_seconds has elapsed.
     Returns {"total_stored": int, "assets_processed": int, "assets_failed": int,
-             "assets_skipped": int, "assets_mapped": int}.
+             "assets_skipped": int, "assets_mapped": int, "warnings": [...]}.
     """
     from app.models import TaxLot
 
@@ -414,6 +458,9 @@ def backfill_historical_prices(db: Session, deadline_seconds: float = 240) -> di
     # Auto-map coingecko_ids for known symbols first
     mapped = auto_map_coingecko_ids(db)
     logger.info("Auto-mapped %d assets to CoinGecko IDs", mapped)
+
+    # Collect warnings for assets that can't be priced
+    warnings = _collect_unmapped_warnings(db)
 
     # Find all non-fiat assets with lots (open or closed) and a coingecko_id
     held_assets = (
@@ -430,7 +477,7 @@ def backfill_historical_prices(db: Session, deadline_seconds: float = 240) -> di
 
     if not held_assets:
         return {"total_stored": 0, "assets_processed": 0, "assets_failed": 0,
-                "assets_skipped": 0, "assets_mapped": mapped}
+                "assets_skipped": 0, "assets_mapped": mapped, "warnings": warnings}
 
     total_stored = 0
     assets_processed = 0
@@ -478,4 +525,5 @@ def backfill_historical_prices(db: Session, deadline_seconds: float = 240) -> di
         "assets_failed": assets_failed,
         "assets_skipped": assets_skipped,
         "assets_mapped": mapped,
+        "warnings": warnings,
     }

@@ -70,7 +70,8 @@ KOINLY_PRESET = CsvPreset(
 
 def _koinly_infer_type(row: dict) -> str:
     """Infer transaction type for Koinly format based on amounts."""
-    label = (row.get("Label") or "").strip().lower()
+    # Check both "Label" and "Tag" columns (some exports use "Tag")
+    label = (row.get("Label") or row.get("Tag") or "").strip().lower()
     if label in KOINLY_TYPE_MAP:
         return KOINLY_TYPE_MAP[label]
 
@@ -251,7 +252,19 @@ def detect_preset(headers: list[str]) -> tuple[str, CsvPreset]:
 
     # Koinly: has "Sent Amount" and "Received Amount"
     if "Sent Amount" in header_set and "Received Amount" in header_set:
-        return "koinly_universal", KOINLY_PRESET
+        preset = KOINLY_PRESET
+        # Some exports use "Tag" instead of "Label"
+        if "Tag" in header_set and "Label" not in header_set:
+            columns = dict(preset.columns)
+            columns["label"] = "Tag"
+            preset = CsvPreset(
+                name=preset.name,
+                columns=columns,
+                date_format=preset.date_format,
+                type_map=preset.type_map,
+                infer_type=preset.infer_type,
+            )
+        return "koinly_universal", preset
 
     # River: has "Amount (BTC)"
     if "Amount (BTC)" in header_set:

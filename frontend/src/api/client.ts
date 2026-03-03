@@ -247,9 +247,9 @@ export const updateSettings = (data: Record<string, string>) =>
 
 // ---------- Prices ----------
 export const refreshCurrentPrices = () =>
-  api.post<{ updated: number; failed: number; skipped: number }>("/prices/refresh-current");
+  api.post<{ updated: number; failed: number; skipped: number; warnings?: string[] }>("/prices/refresh-current");
 export const backfillPrices = () =>
-  api.post<{ total_stored: number; assets_processed: number; assets_failed: number; assets_mapped: number }>(
+  api.post<{ total_stored: number; assets_processed: number; assets_failed: number; assets_mapped: number; warnings?: string[] }>(
     "/prices/backfill", {}, { timeout: 300000 }
   );
 
