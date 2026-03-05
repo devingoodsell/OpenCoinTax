@@ -5,6 +5,7 @@ import {
   downloadForm8949Csv,
   fetchScheduleD,
   fetchReportTaxSummary,
+  fetchTaxYears,
   recalculate,
   validateTax,
   compareMethods,
@@ -18,16 +19,22 @@ import { openPrintWindow } from "./PrintReport";
 
 type Tab = "8949" | "schedule-d" | "summary" | "audit";
 
-const YEARS = [2024, 2025, 2026];
-
 export default function Reports() {
   const { taxYear, setTaxYear } = useTaxYear();
+  const [years, setYears] = useState<number[]>([taxYear]);
   const [tab, setTab] = useState<Tab>("8949");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [generating, setGenerating] = useState(false);
+
+  // Fetch available tax years on mount
+  useEffect(() => {
+    fetchTaxYears()
+      .then((r) => setYears(r.data.years))
+      .catch(() => {});
+  }, []);
 
   // Audit state
   const [auditChecks, setAuditChecks] = useState<{ check_name: string; status: string; details: string }[] | null>(null);
@@ -134,7 +141,7 @@ export default function Reports() {
               border: "1px solid var(--border-default)",
             }}
           >
-            {YEARS.map((y) => (
+            {years.map((y) => (
               <option key={y} value={y}>
                 {y}
               </option>

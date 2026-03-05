@@ -8,6 +8,7 @@ from app.models.base import (
     INCOME_TYPES,
     ImportStatus,
     LotSourceType,
+    STABLECOIN_SYMBOLS,
     TimestampMixin,
     TransactionSource,
     TransactionType,
@@ -52,5 +53,6 @@ __all__ = [
     "ACQUISITION_TYPES",
     "DISPOSAL_TYPES",
     "INCOME_TYPES",
+    "STABLECOIN_SYMBOLS",
     "WRAPPING_PAIRS",
 ]

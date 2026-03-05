@@ -150,3 +150,6 @@ WRAPPING_PAIRS: frozenset[frozenset[str]] = frozenset({
     frozenset({"ETH", "WETH"}),
     frozenset({"BTC", "WBTC"}),
 })
+
+# Stablecoin symbols — pegged 1:1 to USD, excluded from capital gains tracking
+STABLECOIN_SYMBOLS: frozenset[str] = frozenset({"USDC", "USDT", "GUSD"})

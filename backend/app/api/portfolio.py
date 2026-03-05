@@ -13,10 +13,12 @@ from app.models import (
     Asset,
     LotAssignment,
     PriceHistory,
+    STABLECOIN_SYMBOLS,
     TaxLot,
     Transaction,
     Wallet,
 )
+from app.services.holdings import compute_balances, compute_cost_basis, compute_balances_before_date
 
 router = APIRouter()
 
@@ -89,7 +91,7 @@ _ZERO = Decimal("0")
 _ONE = Decimal("1")
 
 # Stablecoins / fiat pegged to $1.00 — market value equals balance
-_STABLECOIN_SYMBOLS = {"USD", "USDC", "GUSD", "USDT"}
+_STABLECOIN_SYMBOLS = STABLECOIN_SYMBOLS | {"USD"}
 
 
 def _dec(value: str | None) -> Decimal:
@@ -115,30 +117,45 @@ def get_daily_values(
 ):
     """Return daily portfolio value for the given date range.
 
-    For each day, sums (remaining_quantity × price) for all open lots.
+    Quantities are derived from transaction history (event-based).
+    For each day, sums (balance × price) for all assets held.
     """
 
-    # 1. Get all lots that were open at some point in the range.
-    #    A lot is "open on day D" if acquired_date <= D and either
-    #    still open (is_fully_disposed=False) or was disposed after D.
-    lots = (
-        db.query(
-            TaxLot.id,
-            TaxLot.asset_id,
-            TaxLot.remaining_amount,
-            TaxLot.amount,
-            TaxLot.cost_basis_usd,
-            TaxLot.cost_basis_per_unit,
-            TaxLot.acquired_date,
-            TaxLot.is_fully_disposed,
+    start_dt = datetime.combine(start_date, datetime.min.time())
+
+    # 1. Get initial balances before start_date from transactions
+    #    {(wallet_id, asset_id): Decimal}
+    initial_balances = compute_balances_before_date(db, start_dt)
+
+    # 2. Get all transactions in [start_date, end_date] to track balance changes
+    end_dt = datetime.combine(end_date, datetime.max.time())
+    txs_in_range = (
+        db.query(Transaction)
+        .filter(
+            Transaction.datetime_utc >= start_dt,
+            Transaction.datetime_utc <= end_dt,
         )
-        .join(Asset, TaxLot.asset_id == Asset.id)
-        .filter(TaxLot.acquired_date <= datetime.combine(end_date, datetime.max.time()))
-        .filter(Asset.is_hidden == False)
+        .order_by(Transaction.datetime_utc)
         .all()
     )
 
-    if not lots:
+    # Collect all asset IDs involved (from initial + transactions)
+    all_asset_ids: set[int] = set()
+    for _, aid in initial_balances:
+        all_asset_ids.add(aid)
+    for tx in txs_in_range:
+        if tx.to_asset_id:
+            all_asset_ids.add(tx.to_asset_id)
+        if tx.from_asset_id:
+            all_asset_ids.add(tx.from_asset_id)
+
+    # Filter out hidden assets
+    hidden_asset_ids = set(
+        row[0] for row in db.query(Asset.id).filter(Asset.is_hidden == True).all()
+    )
+    all_asset_ids -= hidden_asset_ids
+
+    if not all_asset_ids and not initial_balances:
         return DailyValuesResponse(
             data_points=[],
             summary=DailyValuesSummary(
@@ -149,73 +166,116 @@ def get_daily_values(
             ),
         )
 
-    # Collect unique asset IDs
-    asset_ids = list({lot.asset_id for lot in lots})
+    asset_ids = list(all_asset_ids)
 
     # Identify stablecoin assets — always priced at $1.00
     stablecoin_asset_ids = set(
         row[0] for row in db.query(Asset.id)
         .filter(Asset.id.in_(asset_ids), Asset.symbol.in_(_STABLECOIN_SYMBOLS))
         .all()
-    )
+    ) if asset_ids else set()
 
-    # 2. Fetch all price data for these assets in the range
-    prices = (
-        db.query(PriceHistory.asset_id, PriceHistory.date, PriceHistory.price_usd)
-        .filter(
-            PriceHistory.asset_id.in_(asset_ids),
-            PriceHistory.date >= start_date,
-            PriceHistory.date <= end_date,
-        )
-        .order_by(PriceHistory.asset_id, PriceHistory.date)
-        .all()
-    )
-
-    # Build price lookup: {(asset_id, date) -> Decimal}
+    # 3. Fetch price data
     price_map: dict[tuple[int, date], Decimal] = {}
-    for p in prices:
-        key = (p.asset_id, p.date)
-        if key not in price_map:
-            price_map[key] = _dec(p.price_usd)
-
-    # Also fetch prices just before the range for forward-fill
-    pre_prices = (
-        db.query(PriceHistory.asset_id, PriceHistory.date, PriceHistory.price_usd)
-        .filter(
-            PriceHistory.asset_id.in_(asset_ids),
-            PriceHistory.date < start_date,
-        )
-        .order_by(PriceHistory.asset_id, PriceHistory.date.desc())
-        .all()
-    )
-    # Last known price before range per asset
-    last_known_before: dict[int, Decimal] = {}
-    for p in pre_prices:
-        if p.asset_id not in last_known_before:
-            last_known_before[p.asset_id] = _dec(p.price_usd)
-
-    # 3. Get disposal dates for lots that are fully disposed (to know when they closed)
-    #    We only need to know the latest disposal for lots that may have closed during range.
-    disposed_lot_ids = [lot.id for lot in lots if lot.is_fully_disposed]
-    disposal_dates: dict[int, date] = {}
-    if disposed_lot_ids:
-        disposal_rows = (
-            db.query(
-                LotAssignment.tax_lot_id,
-                func.max(Transaction.datetime_utc).label("last_disposal"),
+    if asset_ids:
+        prices = (
+            db.query(PriceHistory.asset_id, PriceHistory.date, PriceHistory.price_usd)
+            .filter(
+                PriceHistory.asset_id.in_(asset_ids),
+                PriceHistory.date >= start_date,
+                PriceHistory.date <= end_date,
             )
-            .join(Transaction, LotAssignment.disposal_tx_id == Transaction.id)
-            .filter(LotAssignment.tax_lot_id.in_(disposed_lot_ids))
-            .group_by(LotAssignment.tax_lot_id)
+            .order_by(PriceHistory.asset_id, PriceHistory.date)
             .all()
         )
-        for row in disposal_rows:
-            if row.last_disposal:
-                disposal_dates[row.tax_lot_id] = row.last_disposal.date()
+        for p in prices:
+            key = (p.asset_id, p.date)
+            if key not in price_map:
+                price_map[key] = _dec(p.price_usd)
 
-    # 4. Build list of sample dates to compute
-    #    For short ranges (<= 365 days): every day
-    #    For longer ranges: sample to keep ~300 data points max
+    # Fetch prices just before the range for forward-fill
+    last_known_before: dict[int, Decimal] = {}
+    if asset_ids:
+        pre_prices = (
+            db.query(PriceHistory.asset_id, PriceHistory.date, PriceHistory.price_usd)
+            .filter(
+                PriceHistory.asset_id.in_(asset_ids),
+                PriceHistory.date < start_date,
+            )
+            .order_by(PriceHistory.asset_id, PriceHistory.date.desc())
+            .all()
+        )
+        for p in pre_prices:
+            if p.asset_id not in last_known_before:
+                last_known_before[p.asset_id] = _dec(p.price_usd)
+
+    # 4. Build balance-change events from transactions
+    #    Each event: (date, asset_id, delta) — aggregated per asset (ignoring wallet)
+    balance_events: dict[date, dict[int, Decimal]] = {}
+    # Also track running cost basis changes from to_value_usd / from_value_usd
+    cost_events: dict[date, dict[int, Decimal]] = {}
+
+    for tx in txs_in_range:
+        tx_date = tx.datetime_utc.date() if isinstance(tx.datetime_utc, datetime) else tx.datetime_utc
+        # Inflow
+        if tx.to_asset_id and tx.to_amount and tx.to_asset_id not in hidden_asset_ids:
+            if tx_date not in balance_events:
+                balance_events[tx_date] = {}
+            balance_events[tx_date][tx.to_asset_id] = (
+                balance_events[tx_date].get(tx.to_asset_id, _ZERO) + _dec(tx.to_amount)
+            )
+            # Cost tracking: acquisition adds cost
+            if tx.to_value_usd:
+                if tx_date not in cost_events:
+                    cost_events[tx_date] = {}
+                cost_events[tx_date][tx.to_asset_id] = (
+                    cost_events[tx_date].get(tx.to_asset_id, _ZERO) + _dec(tx.to_value_usd)
+                )
+        # Outflow
+        if tx.from_asset_id and tx.from_amount and tx.from_asset_id not in hidden_asset_ids:
+            if tx_date not in balance_events:
+                balance_events[tx_date] = {}
+            balance_events[tx_date][tx.from_asset_id] = (
+                balance_events[tx_date].get(tx.from_asset_id, _ZERO) - _dec(tx.from_amount)
+            )
+            # Cost tracking: disposal reduces cost proportionally
+            if tx.from_value_usd:
+                if tx_date not in cost_events:
+                    cost_events[tx_date] = {}
+                cost_events[tx_date][tx.from_asset_id] = (
+                    cost_events[tx_date].get(tx.from_asset_id, _ZERO) - _dec(tx.from_value_usd)
+                )
+
+    # 5. Compute initial cost basis from open lots before start_date
+    #    Aggregate per asset (across wallets) for the initial snapshot
+    initial_cost_per_asset: dict[int, Decimal] = {}
+    pre_lots = (
+        db.query(
+            TaxLot.asset_id,
+            TaxLot.remaining_amount,
+            TaxLot.cost_basis_per_unit,
+        )
+        .filter(TaxLot.is_fully_disposed == False)
+        .all()
+    )
+    for lot in pre_lots:
+        aid = lot.asset_id
+        if aid in hidden_asset_ids:
+            continue
+        remaining = _dec(lot.remaining_amount)
+        per_unit = _dec(lot.cost_basis_per_unit)
+        initial_cost_per_asset[aid] = initial_cost_per_asset.get(aid, _ZERO) + remaining * per_unit
+
+    # 6. Collapse initial_balances by asset (sum across wallets)
+    running_balance: dict[int, Decimal] = {}
+    for (_, aid), qty in initial_balances.items():
+        if aid in hidden_asset_ids:
+            continue
+        running_balance[aid] = running_balance.get(aid, _ZERO) + qty
+
+    running_cost: dict[int, Decimal] = dict(initial_cost_per_asset)
+
+    # 7. Build sample dates
     total_days = (end_date - start_date).days + 1
     max_points = 300
     step = max(1, total_days // max_points)
@@ -225,24 +285,27 @@ def get_daily_values(
     while current_day <= end_date:
         sample_dates.append(current_day)
         current_day += timedelta(days=step)
-    # Always include the end date
     if sample_dates[-1] != end_date:
         sample_dates.append(end_date)
 
-    # 5. Iterate through sample dates and compute portfolio value
-    #    Forward-fill prices: walk through ALL dates in order but only emit
-    #    data points for sample dates
+    # 8. Walk day-by-day with forward-fill pricing
     data_points: list[DailyDataPoint] = []
     last_price: dict[int, Decimal] = dict(last_known_before)
-    # Force $1.00 for stablecoins
     for aid in stablecoin_asset_ids:
         last_price[aid] = _ONE
     sample_set = set(sample_dates)
 
-    # Walk day-by-day to maintain forward-fill, but only compute lots on sample days
     walk_day = start_date
     while walk_day <= end_date:
-        # Update forward-fill prices for this day
+        # Apply balance/cost events for this day
+        if walk_day in balance_events:
+            for aid, delta in balance_events[walk_day].items():
+                running_balance[aid] = running_balance.get(aid, _ZERO) + delta
+        if walk_day in cost_events:
+            for aid, delta in cost_events[walk_day].items():
+                running_cost[aid] = running_cost.get(aid, _ZERO) + delta
+
+        # Update forward-fill prices
         for aid in asset_ids:
             key = (aid, walk_day)
             if key in price_map:
@@ -253,37 +316,18 @@ def get_daily_values(
             day_value = _ZERO
             day_cost_basis = _ZERO
 
-            for lot in lots:
-                # Was this lot open on walk_day?
-                acquired = lot.acquired_date
-                if isinstance(acquired, datetime):
-                    acquired = acquired.date()
-                if acquired > walk_day:
+            for aid, qty in running_balance.items():
+                if qty <= _ZERO:
                     continue
-
-                # If fully disposed, check if disposal happened before this day
-                if lot.is_fully_disposed:
-                    disposal_day = disposal_dates.get(lot.id)
-                    if disposal_day is not None and disposal_day < walk_day:
-                        continue
-
-                remaining = _dec(lot.remaining_amount)
-                # For disposed lots where disposal is on or after walk_day,
-                # use original amount (they were fully open before disposal)
-                if lot.is_fully_disposed:
-                    disposal_day = disposal_dates.get(lot.id)
-                    if disposal_day is not None and disposal_day >= walk_day:
-                        remaining = _dec(lot.amount)
-
-                if remaining <= _ZERO:
-                    continue
-
-                price = last_price.get(lot.asset_id, _ZERO)
-                lot_value = remaining * price
-                lot_cost = _dec(lot.cost_basis_per_unit) * remaining
-
-                day_value += lot_value
-                day_cost_basis += lot_cost
+                price = last_price.get(aid, _ZERO)
+                day_value += qty * price
+                # Use running cost if available, else zero
+                asset_cost = running_cost.get(aid, _ZERO)
+                if asset_cost > _ZERO:
+                    day_cost_basis += asset_cost
+                else:
+                    # Fallback: use price as proxy for cost if no cost data
+                    pass
 
             data_points.append(DailyDataPoint(
                 date=walk_day.isoformat(),
@@ -293,10 +337,9 @@ def get_daily_values(
 
         walk_day += timedelta(days=1)
 
-    # 5. Summary from the last data point
+    # 9. Summary from the last data point
     if data_points:
         last = data_points[-1]
-        first = data_points[0]
         current_val = _dec(last.total_value_usd)
         cost_basis = _dec(last.cost_basis_usd)
         unrealized = current_val - cost_basis
@@ -329,82 +372,61 @@ def get_daily_values(
 
 @router.get("/holdings", response_model=HoldingsResponse)
 def get_holdings(db: Session = Depends(get_db)):
-    """Return consolidated holdings aggregated across all wallets."""
+    """Return consolidated holdings aggregated across all wallets.
 
-    # Aggregate open lots by asset, using per-unit cost * remaining for accuracy
-    # Exclude fiat assets — their balances come from transaction flows
-    open_lots = (
-        db.query(
-            TaxLot.asset_id,
-            TaxLot.wallet_id,
-            TaxLot.remaining_amount,
-            TaxLot.cost_basis_per_unit,
-            Asset.symbol,
-            Asset.name.label("asset_name"),
-            Wallet.name.label("wallet_name"),
-        )
-        .join(Asset, TaxLot.asset_id == Asset.id)
-        .join(Wallet, TaxLot.wallet_id == Wallet.id)
-        .filter(TaxLot.is_fully_disposed == False, Asset.is_hidden == False, Asset.is_fiat == False)
-        .all()
-    )
+    Quantities are derived from transaction history (inflows minus outflows).
+    Cost basis comes from open tax lots when available; for fiat, cost basis = face value.
+    """
 
-    if not open_lots:
+    # Transaction-based balances: {(wallet_id, asset_id): qty}
+    all_balances = compute_balances(db)
+    # Cost basis from open tax lots: {(wallet_id, asset_id): cost}
+    all_cost_basis = compute_cost_basis(db)
+
+    if not all_balances:
         return HoldingsResponse(holdings=[], total_portfolio_value="0.00")
 
-    # Aggregate in Python to correctly handle partial disposals
+    # Look up asset metadata
+    asset_ids_in_use = list({aid for _, aid in all_balances})
+    asset_map: dict[int, Asset] = {
+        a.id: a for a in db.query(Asset).filter(Asset.id.in_(asset_ids_in_use)).all()
+    }
+    wallet_ids_in_use = list({wid for wid, _ in all_balances})
+    wallet_map: dict[int, Wallet] = {
+        w.id: w for w in db.query(Wallet).filter(Wallet.id.in_(wallet_ids_in_use)).all()
+    }
+
+    # Aggregate by asset_id across wallets
     agg: dict[int, dict] = {}
     wallet_agg: dict[int, dict[int, dict]] = {}  # asset_id -> wallet_id -> {name, qty}
-    for lot in open_lots:
-        remaining = _dec(lot.remaining_amount)
-        per_unit = _dec(lot.cost_basis_per_unit)
-        if lot.asset_id not in agg:
-            agg[lot.asset_id] = {
-                "symbol": lot.symbol,
-                "asset_name": lot.asset_name,
+    for (wid, aid), qty in all_balances.items():
+        asset = asset_map.get(aid)
+        if not asset:
+            continue
+        if aid not in agg:
+            agg[aid] = {
+                "symbol": asset.symbol,
+                "asset_name": asset.name,
                 "total_qty": _ZERO,
                 "total_cost": _ZERO,
+                "is_fiat": asset.is_fiat,
             }
-        agg[lot.asset_id]["total_qty"] += remaining
-        agg[lot.asset_id]["total_cost"] += per_unit * remaining
+        agg[aid]["total_qty"] += qty
+        # Cost basis: from lots, or face value for fiat
+        lot_cost = all_cost_basis.get((wid, aid), _ZERO)
+        if asset.is_fiat:
+            agg[aid]["total_cost"] += qty  # fiat cost basis = face value
+        else:
+            agg[aid]["total_cost"] += lot_cost
 
         # Per-wallet breakdown
-        if lot.asset_id not in wallet_agg:
-            wallet_agg[lot.asset_id] = {}
-        wid = lot.wallet_id
-        if wid not in wallet_agg[lot.asset_id]:
-            wallet_agg[lot.asset_id][wid] = {"name": lot.wallet_name, "qty": _ZERO}
-        wallet_agg[lot.asset_id][wid]["qty"] += remaining
-
-    # Add fiat balances from transaction flows (not tax lots)
-    fiat_assets = db.query(Asset).filter(Asset.is_fiat == True, Asset.is_hidden == False).all()
-    all_wallets = db.query(Wallet).filter(Wallet.is_archived == False).all()
-    for fiat_asset in fiat_assets:
-        for w in all_wallets:
-            inflows = (
-                db.query(func.coalesce(func.sum(Transaction.to_amount), 0))
-                .filter(Transaction.to_wallet_id == w.id, Transaction.to_asset_id == fiat_asset.id)
-                .scalar()
-            )
-            outflows = (
-                db.query(func.coalesce(func.sum(Transaction.from_amount), 0))
-                .filter(Transaction.from_wallet_id == w.id, Transaction.from_asset_id == fiat_asset.id)
-                .scalar()
-            )
-            net = _dec(str(inflows)) - _dec(str(outflows))
-            if net > _ZERO:
-                if fiat_asset.id not in agg:
-                    agg[fiat_asset.id] = {
-                        "symbol": fiat_asset.symbol,
-                        "asset_name": fiat_asset.name,
-                        "total_qty": _ZERO,
-                        "total_cost": _ZERO,
-                    }
-                agg[fiat_asset.id]["total_qty"] += net
-                agg[fiat_asset.id]["total_cost"] += net  # fiat cost basis = face value
-                if fiat_asset.id not in wallet_agg:
-                    wallet_agg[fiat_asset.id] = {}
-                wallet_agg[fiat_asset.id][w.id] = {"name": w.name, "qty": net}
+        if aid not in wallet_agg:
+            wallet_agg[aid] = {}
+        wallet = wallet_map.get(wid)
+        wallet_name = wallet.name if wallet else "Unknown"
+        if wid not in wallet_agg[aid]:
+            wallet_agg[aid][wid] = {"name": wallet_name, "qty": _ZERO}
+        wallet_agg[aid][wid]["qty"] += qty
 
     class _Row:
         def __init__(self, asset_id, symbol, asset_name, total_qty, total_cost):

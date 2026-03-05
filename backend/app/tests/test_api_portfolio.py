@@ -230,6 +230,51 @@ class TestHoldings:
         assert resp.json()["holdings"] == []
         assert resp.json()["total_portfolio_value"] == "0.00"
 
+    def test_holdings_without_tax_lots(self, client, db, seed_assets, seed_wallets, seed_settings):
+        """Holdings should appear from transactions alone — no tax lots required."""
+        btc = seed_assets["BTC"]
+        wallet = seed_wallets["Coinbase"]
+
+        # Create buy and sell transactions but NO tax lots
+        make_transaction(
+            db,
+            datetime_utc=datetime(2025, 1, 10, tzinfo=timezone.utc),
+            tx_type="buy",
+            to_wallet_id=wallet.id,
+            to_asset_id=btc.id,
+            to_amount="2.0",
+            to_value_usd="80000.00",
+        )
+        make_transaction(
+            db,
+            datetime_utc=datetime(2025, 2, 1, tzinfo=timezone.utc),
+            tx_type="sell",
+            from_wallet_id=wallet.id,
+            from_asset_id=btc.id,
+            from_amount="0.5",
+            from_value_usd="25000.00",
+        )
+
+        # Add a price so market value can be computed
+        db.add(PriceHistory(
+            asset_id=btc.id, date=date(2025, 3, 1),
+            price_usd="50000.00", source="test",
+        ))
+        db.commit()
+
+        resp = client.get("/api/portfolio/holdings")
+        assert resp.status_code == 200
+        holdings = resp.json()["holdings"]
+        assert len(holdings) == 1
+        btc_holding = holdings[0]
+        assert btc_holding["asset_symbol"] == "BTC"
+        # 2.0 bought - 0.5 sold = 1.5
+        assert Decimal(btc_holding["total_quantity"]) == Decimal("1.50000000")
+        # Cost basis should be 0 (no tax lots)
+        assert Decimal(btc_holding["total_cost_basis_usd"]) == Decimal("0.00")
+        # Market value = 1.5 * 50000 = 75000
+        assert Decimal(btc_holding["market_value_usd"]) == Decimal("75000.00")
+
 
 class TestPortfolioStats:
     def test_aggregates_transactions(self, client, portfolio_seed):

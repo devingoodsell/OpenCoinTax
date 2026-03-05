@@ -34,6 +34,17 @@ from app.utils.decimal_helpers import ZERO, PENNY
 router = APIRouter()
 
 
+@router.get("/years")
+def tax_years(db: Session = Depends(get_db)):
+    """Return all tax years that have transaction data, plus the current year."""
+    years = _get_transaction_year_range(db)
+    current_year = datetime.now().year
+    if current_year not in years:
+        years.append(current_year)
+    years.sort()
+    return {"years": years}
+
+
 @router.post("/recalculate")
 def recalculate(year: int | None = None, db: Session = Depends(get_db)):
     """Recalculate cost basis for all wallet/asset pairs across all years."""

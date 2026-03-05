@@ -220,6 +220,9 @@ export const validateTax = () => api.post("/tax/validate");
 export const compareMethods = (year: number) =>
   api.get(`/tax/compare-methods/${year}`);
 
+export const fetchTaxYears = () =>
+  api.get<{ years: number[] }>("/tax/years");
+
 // ---------- Reports ----------
 export const fetchForm8949 = (year: number) =>
   api.get(`/reports/8949/${year}`);

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Account, Wallet, TaxLot, Asset, Transaction, WalletCostBasisMethod, PriceHistory
+from app.services.holdings import compute_balances, compute_cost_basis
 from app.schemas.account import AccountResponse
 from app.schemas.wallet import (
     CostBasisMethodUpdate,
@@ -24,44 +25,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-
-def _compute_fiat_balances(db: Session, wallet_id: int) -> dict[int, tuple[str, Decimal]]:
-    """Compute fiat asset balances from transaction flows (not tax lots).
-
-    Fiat currencies (e.g. USD) don't have capital gains and don't use tax lot
-    tracking. Their balances are the net sum of inflows minus outflows.
-
-    Returns {asset_id: (symbol, net_balance)} for fiat assets with positive balance.
-    """
-    fiat_assets = db.query(Asset).filter(Asset.is_fiat == True, Asset.is_hidden == False).all()
-    if not fiat_assets:
-        return {}
-
-    result = {}
-    for asset in fiat_assets:
-        # Inflows: to_wallet_id matches, to_asset_id matches
-        inflows = (
-            db.query(func.coalesce(func.sum(Transaction.to_amount), 0))
-            .filter(
-                Transaction.to_wallet_id == wallet_id,
-                Transaction.to_asset_id == asset.id,
-            )
-            .scalar()
-        )
-        # Outflows: from_wallet_id matches, from_asset_id matches
-        outflows = (
-            db.query(func.coalesce(func.sum(Transaction.from_amount), 0))
-            .filter(
-                Transaction.from_wallet_id == wallet_id,
-                Transaction.from_asset_id == asset.id,
-            )
-            .scalar()
-        )
-        net = Decimal(str(inflows)) - Decimal(str(outflows))
-        if net > 0:
-            result[asset.id] = (asset.symbol, net)
-
-    return result
 
 CATEGORY_MAP = {"exchange": "exchange"}
 
@@ -132,6 +95,15 @@ def list_wallets(
         if lp.asset_id not in all_latest_prices:
             all_latest_prices[lp.asset_id] = Decimal(str(lp.price_usd))
 
+    # Transaction-based balances and cost basis (computed once for all wallets)
+    all_balances = compute_balances(db)
+    all_cost_basis = compute_cost_basis(db)
+
+    # Build fiat asset ID set for cost basis = face value logic
+    fiat_asset_ids = set(
+        row[0] for row in db.query(Asset.id).filter(Asset.is_fiat == True).all()
+    )
+
     # Enrich with computed fields
     result = []
     for w in wallets:
@@ -152,48 +124,22 @@ def list_wallets(
             .scalar()
         )
 
-        # Compute market-value-based total; fall back to cost basis
-        # Use per-unit cost * remaining to correctly handle partial disposals
-        # Exclude fiat assets — their balances come from transaction flows
-        open_lots_raw = (
-            db.query(
-                TaxLot.asset_id,
-                TaxLot.remaining_amount,
-                TaxLot.cost_basis_per_unit,
-            )
-            .join(Asset, TaxLot.asset_id == Asset.id)
-            .filter(
-                TaxLot.wallet_id == w.id,
-                TaxLot.is_fully_disposed == False,
-                Asset.is_hidden == False,
-                Asset.is_fiat == False,
-            )
-            .all()
-        )
-
-        # Aggregate by asset in Python
-        asset_agg: dict[int, tuple[Decimal, Decimal]] = {}  # asset_id -> (qty, cost)
-        for lot in open_lots_raw:
-            remaining = Decimal(str(lot.remaining_amount or "0"))
-            per_unit = Decimal(str(lot.cost_basis_per_unit or "0"))
-            prev_qty, prev_cost = asset_agg.get(lot.asset_id, (Decimal("0"), Decimal("0")))
-            asset_agg[lot.asset_id] = (prev_qty + remaining, prev_cost + per_unit * remaining)
-
+        # Slice balances for this wallet from the pre-computed maps
         total_value = Decimal("0")
         total_cost_basis = Decimal("0")
-        for asset_id, (qty, cost) in asset_agg.items():
+        for (bwid, aid), qty in all_balances.items():
+            if bwid != w.id:
+                continue
+            if aid in fiat_asset_ids:
+                cost = qty  # fiat cost basis = face value
+            else:
+                cost = all_cost_basis.get((bwid, aid), Decimal("0"))
             total_cost_basis += cost
-            price = all_latest_prices.get(asset_id)
+            price = all_latest_prices.get(aid)
             if price is not None and qty > 0:
                 total_value += qty * price
             else:
                 total_value += cost
-
-        # Add fiat balances (computed from transaction flows, not tax lots)
-        fiat_balances = _compute_fiat_balances(db, w.id)
-        for _fiat_id, (_sym, fiat_net) in fiat_balances.items():
-            total_value += fiat_net
-            total_cost_basis += fiat_net  # fiat cost basis = face value
 
         item = WalletListItemResponse(
             **{c.name: getattr(w, c.name) for c in w.__table__.columns},
@@ -221,39 +167,19 @@ def create_wallet(data: WalletCreate, db: Session = Depends(get_db)):
 def get_wallet(wallet_id: int, db: Session = Depends(get_db)):
     wallet = _get_wallet_or_404(wallet_id, db)
 
-    # Calculate balances from open tax lots (excluding fiat — computed separately)
-    # Query individual lots to correctly compute cost basis for partial disposals
-    open_lot_rows = (
-        db.query(
-            TaxLot.asset_id,
-            Asset.symbol,
-            TaxLot.remaining_amount,
-            TaxLot.cost_basis_per_unit,
-        )
-        .join(Asset, TaxLot.asset_id == Asset.id)
-        .filter(
-            TaxLot.wallet_id == wallet_id,
-            TaxLot.is_fully_disposed == False,
-            Asset.is_hidden == False,
-            Asset.is_fiat == False,
-        )
-        .all()
-    )
+    # Transaction-based balances for this wallet
+    wallet_balances = compute_balances(db, wallet_id=wallet_id)
+    wallet_cost_basis = compute_cost_basis(db, wallet_id=wallet_id)
 
-    # Aggregate by asset in Python
-    _bal_agg: dict[int, dict] = {}
-    for lot in open_lot_rows:
-        remaining = Decimal(str(lot.remaining_amount or "0"))
-        per_unit = Decimal(str(lot.cost_basis_per_unit or "0"))
-        if lot.asset_id not in _bal_agg:
-            _bal_agg[lot.asset_id] = {"symbol": lot.symbol, "quantity": Decimal("0"), "cost_basis": Decimal("0")}
-        _bal_agg[lot.asset_id]["quantity"] += remaining
-        _bal_agg[lot.asset_id]["cost_basis"] += per_unit * remaining
-
-    # Add fiat balances from transaction flows
-    fiat_balances = _compute_fiat_balances(db, wallet_id)
-    for fiat_id, (fiat_sym, fiat_net) in fiat_balances.items():
-        _bal_agg[fiat_id] = {"symbol": fiat_sym, "quantity": fiat_net, "cost_basis": fiat_net}
+    # Build fiat asset ID set and asset symbol lookup
+    asset_ids_in_use = list({aid for _, aid in wallet_balances})
+    asset_map: dict[int, Asset] = {}
+    fiat_asset_ids: set[int] = set()
+    if asset_ids_in_use:
+        for a in db.query(Asset).filter(Asset.id.in_(asset_ids_in_use)).all():
+            asset_map[a.id] = a
+            if a.is_fiat:
+                fiat_asset_ids.add(a.id)
 
     class _BalRow:
         def __init__(self, asset_id, symbol, quantity, cost_basis):
@@ -262,10 +188,16 @@ def get_wallet(wallet_id: int, db: Session = Depends(get_db)):
             self.quantity = quantity
             self.cost_basis = cost_basis
 
-    rows = [
-        _BalRow(aid, d["symbol"], d["quantity"], d["cost_basis"])
-        for aid, d in _bal_agg.items()
-    ]
+    rows = []
+    for (wid, aid), qty in wallet_balances.items():
+        asset = asset_map.get(aid)
+        if not asset:
+            continue
+        if aid in fiat_asset_ids:
+            cost = qty  # fiat cost basis = face value
+        else:
+            cost = wallet_cost_basis.get((wid, aid), Decimal("0"))
+        rows.append(_BalRow(aid, asset.symbol, qty, cost))
 
     # Get latest price for each asset
     asset_ids = [r.asset_id for r in rows]

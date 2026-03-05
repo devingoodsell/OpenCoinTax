@@ -8,6 +8,7 @@ vi.mock("../../api/client", () => ({
   downloadForm8949Csv: vi.fn(),
   fetchScheduleD: vi.fn(),
   fetchReportTaxSummary: vi.fn(),
+  fetchTaxYears: vi.fn().mockResolvedValue({ data: { years: [2024, 2025, 2026] } }),
   recalculate: vi.fn(),
   validateTax: vi.fn(),
   compareMethods: vi.fn(),

@@ -1,7 +1,11 @@
-"""Balance reconciliation — compares expected balances from transaction history
-against the sum of remaining amounts in open tax lots.
+"""Balance reconciliation — compares the source-of-truth balances derived from
+transaction history (inflows minus outflows) against the sum of remaining
+amounts in open tax lots.
 
-Discrepancies indicate data corruption, missed transactions, or tax engine bugs.
+Transaction-based balances are authoritative (used for all holdings display).
+Tax lots are used only for tax reports.  Discrepancies indicate the tax engine's
+lot tracking has drifted from actual transaction history — typically due to
+missed transactions, data corruption, or tax engine bugs.
 """
 
 from decimal import Decimal

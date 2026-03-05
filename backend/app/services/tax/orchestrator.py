@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     Asset, Transaction, TaxLot, LotAssignment, WalletCostBasisMethod, Setting,
     TransactionType, CostBasisMethod, LotSourceType,
-    ACQUISITION_TYPES, DISPOSAL_TYPES, INCOME_TYPES,
+    ACQUISITION_TYPES, DISPOSAL_TYPES, INCOME_TYPES, STABLECOIN_SYMBOLS,
 )
 from app.services.lot_selector import InsufficientLotsError
 from app.services.tax.lot_manager import create_lot, get_open_lots
@@ -302,8 +302,19 @@ def recalculate_for_wallet_asset(
 
 
 def _find_pairs_for_year(db: Session, year: int) -> set[tuple[int, int]]:
-    """Find all unique (wallet_id, asset_id) pairs with transactions in the given year."""
+    """Find all unique (wallet_id, asset_id) pairs with transactions in the given year.
+
+    Excludes fiat currencies and stablecoins (USDC, USDT, GUSD) — these are pegged
+    1:1 to USD and should not generate capital gains or losses.
+    """
     fiat_ids = {a.id for a in db.query(Asset.id).filter(Asset.is_fiat == True).all()}
+    # Also exclude stablecoins — pegged to $1, no capital gains
+    stablecoin_ids = {
+        a.id for a in db.query(Asset.id, Asset.symbol).filter(
+            Asset.symbol.in_(STABLECOIN_SYMBOLS)
+        ).all()
+    }
+    fiat_ids |= stablecoin_ids
 
     from_pairs = (
         db.query(
