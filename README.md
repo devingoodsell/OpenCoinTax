@@ -288,6 +288,7 @@ OpenCoinTax/
 | `GET` | `/api/import/logs` | Import history |
 | `POST` | `/api/wallets/{id}/sync` | Sync wallet from blockchain |
 | `GET` | `/api/wallets/{id}/sync-status` | Check sync status |
+| `GET` | `/api/tax/years` | List available tax years |
 | `POST` | `/api/tax/recalculate` | Run tax engine |
 | `GET` | `/api/tax/summary/{year}` | Tax year summary |
 | `GET` | `/api/tax/gains/{year}` | Capital gains list |
