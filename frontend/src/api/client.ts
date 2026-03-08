@@ -251,10 +251,16 @@ export const updateSettings = (data: Record<string, string>) =>
 // ---------- Prices ----------
 export const refreshCurrentPrices = () =>
   api.post<{ updated: number; failed: number; skipped: number; warnings?: string[] }>("/prices/refresh-current");
+export interface BackfillStatusResponse {
+  status: "idle" | "running" | "completed" | "failed";
+  result?: { total_stored: number; assets_processed: number; assets_failed: number; assets_mapped: number; historical_fetched?: number; warnings?: string[] } | null;
+  error?: string | null;
+  progress?: string | null;
+}
 export const backfillPrices = () =>
-  api.post<{ total_stored: number; assets_processed: number; assets_failed: number; assets_mapped: number; warnings?: string[] }>(
-    "/prices/backfill", {}, { timeout: 300000 }
-  );
+  api.post<BackfillStatusResponse>("/prices/backfill");
+export const fetchBackfillStatus = () =>
+  api.get<BackfillStatusResponse>("/prices/backfill/status");
 
 // ---------- Portfolio ----------
 export interface DailyDataPoint {
@@ -273,6 +279,8 @@ export interface DailyValuesSummary {
 export interface DailyValuesResponse {
   data_points: DailyDataPoint[];
   summary: DailyValuesSummary;
+  warnings?: string[];
+  price_data_start_date?: string | null;
 }
 
 export interface WalletBreakdownItem {

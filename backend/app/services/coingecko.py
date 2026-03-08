@@ -111,13 +111,21 @@ SYMBOL_TO_COINGECKO: dict[str, str] = {
 def _coingecko_client_kwargs(db: Session) -> dict:
     """Return base_url and headers for CoinGecko API calls.
 
-    If a coingecko_api_key is configured, use the Pro API endpoint.
+    Detects demo vs pro API keys:
+    - Demo keys (CG-...): use api.coingecko.com with x-cg-demo-api-key header
+    - Pro keys (CG-Pro-...): use pro-api.coingecko.com with x-cg-pro-api-key header
     """
     api_key = get_api_key(db, "coingecko_api_key")
     if api_key:
+        if api_key.startswith("CG-Pro-"):
+            return {
+                "base_url": "https://pro-api.coingecko.com/api/v3",
+                "headers": {"x-cg-pro-api-key": api_key},
+            }
+        # Demo / free key
         return {
-            "base_url": "https://pro-api.coingecko.com/api/v3",
-            "headers": {"x-cg-pro-api-key": api_key},
+            "base_url": "https://api.coingecko.com/api/v3",
+            "headers": {"x-cg-demo-api-key": api_key},
         }
     return {
         "base_url": settings.coingecko_api_base,
@@ -169,17 +177,24 @@ def auto_map_coingecko_ids(db: Session) -> int:
     return updated
 
 
-def fetch_price(coingecko_id: str, target_date: date) -> Decimal | None:
+def fetch_price(
+    coingecko_id: str,
+    target_date: date,
+    *,
+    base_url: str | None = None,
+    headers: dict | None = None,
+) -> Decimal | None:
     """Call CoinGecko /coins/{id}/history for a single date.
 
     Returns the USD market price as a Decimal, or None on any failure.
     """
+    api_base = base_url or settings.coingecko_api_base
     date_str = target_date.strftime("%d-%m-%Y")
-    url = f"{settings.coingecko_api_base}/coins/{coingecko_id}/history"
+    url = f"{api_base}/coins/{coingecko_id}/history"
     params = {"date": date_str, "localization": "false"}
 
     try:
-        with httpx.Client(timeout=30.0) as client:
+        with httpx.Client(timeout=30.0, headers=headers or {}) as client:
             resp = client.get(url, params=params)
 
         if resp.status_code == 429:
@@ -442,7 +457,7 @@ def fetch_price_range(
     return _fetch_chart_chunk(coingecko_id, total_days)
 
 
-def backfill_historical_prices(db: Session, deadline_seconds: float = 240) -> dict:
+def backfill_historical_prices(db: Session, deadline_seconds: float = 240, on_progress: callable = None) -> dict:
     """Fetch daily historical prices for all held assets from their earliest lot date.
 
     Uses the CoinGecko /market_chart endpoint for efficient bulk fetching.
@@ -485,6 +500,22 @@ def backfill_historical_prices(db: Session, deadline_seconds: float = 240) -> di
     assets_skipped = 0
     today = date.today()
 
+    # Pre-compute existing price coverage per asset to skip unnecessary API calls
+    start_365 = today - timedelta(days=364)
+    existing_counts: dict[int, int] = {}
+    for row in (
+        db.query(PriceHistory.asset_id, func.count(PriceHistory.id))
+        .filter(
+            PriceHistory.asset_id.in_([a.id for a in held_assets]),
+            PriceHistory.date >= start_365,
+            PriceHistory.date <= today,
+        )
+        .group_by(PriceHistory.asset_id)
+        .all()
+    ):
+        existing_counts[row[0]] = row[1]
+
+    api_calls_made = 0
     for i, asset in enumerate(held_assets):
         # Check deadline before starting a new asset
         elapsed = time.monotonic() - wall_start
@@ -494,15 +525,24 @@ def backfill_historical_prices(db: Session, deadline_seconds: float = 240) -> di
             logger.info("Backfill deadline reached (%.0fs), skipping %d remaining assets", elapsed, remaining)
             break
 
+        # Skip if asset already has good coverage (>= 350 of 365 days)
+        existing = existing_counts.get(asset.id, 0)
+        if existing >= 350:
+            assets_processed += 1
+            logger.info("Skipping %s — already has %d prices in last 365 days", asset.symbol, existing)
+            continue
+
         # Rate-limit between API calls (skip the first)
-        if i > 0:
+        if api_calls_made > 0:
             time.sleep(max(6.0, settings.coingecko_rate_limit_seconds))
 
         # Fetch up to the last 365 days of daily prices (free tier limit)
-        start = today - timedelta(days=364)
         logger.info("Backfilling prices for %s (%s) from %s [%d/%d, %.0fs elapsed]",
-                     asset.symbol, asset.coingecko_id, start, i + 1, len(held_assets), elapsed)
-        prices = fetch_price_range(asset.coingecko_id, start, today)
+                     asset.symbol, asset.coingecko_id, start_365, i + 1, len(held_assets), elapsed)
+        if on_progress:
+            on_progress(f"CoinGecko: {asset.symbol} ({i + 1}/{len(held_assets)})")
+        prices = fetch_price_range(asset.coingecko_id, start_365, today)
+        api_calls_made += 1
 
         if prices is None:
             assets_failed += 1
@@ -519,11 +559,24 @@ def backfill_historical_prices(db: Session, deadline_seconds: float = 240) -> di
         assets_processed += 1
         logger.info("Stored %d prices for %s", stored_count, asset.symbol)
 
+    # ------------------------------------------------------------------
+    # Second pass: CoinCap for dates older than 365 days
+    # ------------------------------------------------------------------
+    coincap_result = {"total_stored": 0}
+    elapsed = time.monotonic() - wall_start
+    if elapsed < deadline_seconds:
+        from app.services.coincap import backfill_old_prices
+        logger.info("Starting CoinCap backfill for dates older than 365 days")
+        coincap_result = backfill_old_prices(db, on_progress=on_progress)
+        if coincap_result.get("warnings"):
+            warnings.extend(coincap_result["warnings"])
+
     return {
         "total_stored": total_stored,
         "assets_processed": assets_processed,
         "assets_failed": assets_failed,
         "assets_skipped": assets_skipped,
         "assets_mapped": mapped,
+        "historical_fetched": coincap_result.get("total_stored", 0),
         "warnings": warnings,
     }

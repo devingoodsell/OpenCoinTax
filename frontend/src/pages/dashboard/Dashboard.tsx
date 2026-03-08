@@ -7,6 +7,7 @@ import {
   fetchTransactionErrorCount,
   refreshCurrentPrices,
   backfillPrices,
+  fetchBackfillStatus,
   hideAsset,
   unhideAsset,
   fetchHiddenAssets,
@@ -56,6 +57,7 @@ export default function Dashboard() {
   const [hiddenAssets, setHiddenAssets] = useState<{ id: number; symbol: string; name: string | null }[]>([]);
   const [showHidden, setShowHidden] = useState(false);
   const [priceWarnings, setPriceWarnings] = useState<string[]>([]);
+  const [backfillProgress, setBackfillProgress] = useState("");
 
   function load(sd: string, ed: string) {
     setLoading(true);
@@ -110,13 +112,47 @@ export default function Dashboard() {
   async function handleBackfill() {
     setBackfilling(true);
     setPriceWarnings([]);
+    setBackfillProgress("");
     try {
-      const resp = await backfillPrices();
-      if (resp.data.warnings && resp.data.warnings.length > 0) {
-        setPriceWarnings(resp.data.warnings);
+      const startResp = await backfillPrices();
+      if (startResp.data.status === "completed" || startResp.data.status === "failed") {
+        if (startResp.data.result?.warnings?.length) setPriceWarnings(startResp.data.result.warnings);
+        if (startResp.data.status === "failed") setError("Backfill failed: " + (startResp.data.error || "unknown error"));
+        load(startDate, endDate);
+        setBackfilling(false);
+        setBackfillProgress("");
+        return;
       }
-      load(startDate, endDate);
-    } catch { setError("Failed to backfill prices"); } finally { setBackfilling(false); }
+      // Poll for completion
+      const poll = async () => {
+        for (;;) {
+          await new Promise((r) => setTimeout(r, 2000));
+          try {
+            const status = await fetchBackfillStatus();
+            if (status.data.progress) setBackfillProgress(status.data.progress);
+            if (status.data.status === "completed") {
+              if (status.data.result?.warnings?.length) setPriceWarnings(status.data.result.warnings);
+              load(startDate, endDate);
+              setBackfilling(false);
+              setBackfillProgress("");
+              return;
+            }
+            if (status.data.status === "failed") {
+              setError("Backfill failed: " + (status.data.error || "unknown error"));
+              setBackfilling(false);
+              setBackfillProgress("");
+              return;
+            }
+          } catch {
+            setError("Failed to check backfill status");
+            setBackfilling(false);
+            setBackfillProgress("");
+            return;
+          }
+        }
+      };
+      poll();
+    } catch { setError("Failed to start backfill"); setBackfilling(false); setBackfillProgress(""); }
   }
 
   function selectPreset(p: Preset) { setActivePreset(p); const [s, e] = presetRange(p); setStartDate(s); setEndDate(e); }
@@ -134,7 +170,7 @@ export default function Dashboard() {
   const unrealizedGain = summary ? parseFloat(summary.unrealized_gain) : 0;
   const unrealizedPct = summary ? parseFloat(summary.unrealized_gain_pct) : 0;
 
-  const rawChartData = (dailyData?.data_points ?? []).map((dp) => ({ date: dp.date, value: parseFloat(dp.total_value_usd) }));
+  const rawChartData = (dailyData?.data_points ?? []).map((dp) => ({ date: dp.date, value: parseFloat(dp.total_value_usd), costBasis: parseFloat(dp.cost_basis_usd) }));
   const firstNonZero = rawChartData.findIndex((dp) => dp.value > 0);
   const chartData = firstNonZero >= 0 ? rawChartData.slice(Math.max(0, firstNonZero - 1)) : rawChartData;
 
@@ -147,8 +183,8 @@ export default function Dashboard() {
           <button onClick={handleBackfill} disabled={backfilling} className="px-3 py-1 text-sm rounded transition-colors disabled:opacity-50 cursor-pointer" style={{ border: "1px solid var(--accent)", color: "var(--accent)" }}
             onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--accent)"; e.currentTarget.style.color = "#fff"; }}
             onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = "var(--accent)"; }}
-            title="Fetch daily historical prices from CoinGecko to populate the chart">
-            {backfilling ? "Backfilling..." : "Backfill Chart"}
+            title="Fetch daily historical prices from CoinGecko (recent year) and CoinCap (older) to populate the chart">
+            {backfilling ? (backfillProgress || "Backfilling...") : "Backfill Chart"}
           </button>
           <button onClick={handleRefreshPrices} disabled={refreshingPrices} className="px-3 py-1 text-sm rounded transition-colors disabled:opacity-50 cursor-pointer" style={{ border: "1px solid var(--success)", color: "var(--success)" }}
             onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--success)"; e.currentTarget.style.color = "#fff"; }}
@@ -162,9 +198,19 @@ export default function Dashboard() {
               border: activePreset === p ? "1px solid var(--accent)" : "1px solid var(--border-default)",
             }}>{p}</button>
           ))}
-          <input type="date" value={startDate} onChange={(e) => { setStartDate(e.target.value); setActivePreset("ALL"); }} className="rounded px-2 py-1 text-sm" style={{ backgroundColor: "var(--bg-surface)", color: "var(--text-primary)", border: "1px solid var(--border-default)" }} />
+          <input type="date" value={startDate} onChange={(e) => {
+            const newStart = e.target.value;
+            setActivePreset("ALL");
+            if (newStart > endDate) { setStartDate(endDate); setEndDate(newStart); }
+            else { setStartDate(newStart); }
+          }} className="rounded px-2 py-1 text-sm" style={{ backgroundColor: "var(--bg-surface)", color: "var(--text-primary)", border: "1px solid var(--border-default)" }} />
           <span style={{ color: "var(--text-muted)" }}>–</span>
-          <input type="date" value={endDate} onChange={(e) => { setEndDate(e.target.value); setActivePreset("1Y"); }} className="rounded px-2 py-1 text-sm" style={{ backgroundColor: "var(--bg-surface)", color: "var(--text-primary)", border: "1px solid var(--border-default)" }} />
+          <input type="date" value={endDate} onChange={(e) => {
+            const newEnd = e.target.value;
+            setActivePreset("ALL");
+            if (newEnd < startDate) { setEndDate(startDate); setStartDate(newEnd); }
+            else { setEndDate(newEnd); }
+          }} className="rounded px-2 py-1 text-sm" style={{ backgroundColor: "var(--bg-surface)", color: "var(--text-primary)", border: "1px solid var(--border-default)" }} />
         </div>
       </div>
 
@@ -190,6 +236,20 @@ export default function Dashboard() {
           <Link to="/transactions?has_errors=true" className="px-3 py-1.5 rounded text-sm font-medium transition-colors cursor-pointer" style={{ border: "1px solid var(--danger)", color: "var(--danger)" }}
             onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--danger)"; e.currentTarget.style.color = "#fff"; }}
             onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; e.currentTarget.style.color = "var(--danger)"; }}>View Errors</Link>
+        </div>
+      )}
+
+      {dailyData?.warnings && dailyData.warnings.length > 0 && (
+        <div className="glass-card p-4 mb-4 flex items-start justify-between" style={{ borderLeft: "4px solid var(--warning, #eab308)" }}>
+          <div>
+            <div className="font-semibold text-sm" style={{ color: "var(--warning, #eab308)" }}>Chart Data Warning</div>
+            {dailyData.warnings.map((w, i) => (
+              <div key={i} className="text-xs mt-1" style={{ color: "var(--text-secondary)" }}>{w}</div>
+            ))}
+          </div>
+          <button onClick={handleBackfill} disabled={backfilling} className="text-xs px-3 py-1.5 rounded transition-colors ml-4 shrink-0" style={{ border: "1px solid var(--accent)", color: "var(--accent)" }}>
+            {backfilling ? (backfillProgress || "Backfilling...") : "Backfill Chart"}
+          </button>
         </div>
       )}
 
@@ -227,7 +287,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <PortfolioChart chartData={hasChartData ? chartData : []} />
+      <PortfolioChart chartData={hasChartData ? chartData : []} priceDataStartDate={dailyData?.price_data_start_date ?? undefined} />
       {stats && <StatCards stats={stats} />}
       {holdings && <AllocationBar holdings={holdings.holdings} />}
       {hasHoldings && <div className="mt-4"><HoldingsSummary holdings={holdings!.holdings} onHide={handleHideAsset} /></div>}

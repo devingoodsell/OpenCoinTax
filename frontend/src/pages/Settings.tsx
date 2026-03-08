@@ -8,6 +8,7 @@ const API_KEY_FIELDS = [
   { key: "etherscan_api_key", label: "Etherscan API Key", help: "Used for syncing Ethereum wallet transactions" },
   { key: "helius_api_key", label: "Helius API Key", help: "Used for syncing Solana wallet transactions" },
   { key: "coingecko_api_key", label: "CoinGecko Pro API Key", help: "Optional — enables higher rate limits for price data" },
+  { key: "coincap_api_key", label: "CoinCap API Key", help: "Required for historical prices older than 1 year" },
 ];
 
 export default function Settings() {

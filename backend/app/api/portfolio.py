@@ -47,6 +47,8 @@ class DailyValuesSummary(BaseModel):
 class DailyValuesResponse(BaseModel):
     data_points: list[DailyDataPoint]
     summary: DailyValuesSummary
+    warnings: list[str] = []
+    price_data_start_date: str | None = None
 
 
 class WalletBreakdownItem(BaseModel):
@@ -212,8 +214,6 @@ def get_daily_values(
     # 4. Build balance-change events from transactions
     #    Each event: (date, asset_id, delta) — aggregated per asset (ignoring wallet)
     balance_events: dict[date, dict[int, Decimal]] = {}
-    # Also track running cost basis changes from to_value_usd / from_value_usd
-    cost_events: dict[date, dict[int, Decimal]] = {}
 
     for tx in txs_in_range:
         tx_date = tx.datetime_utc.date() if isinstance(tx.datetime_utc, datetime) else tx.datetime_utc
@@ -224,13 +224,6 @@ def get_daily_values(
             balance_events[tx_date][tx.to_asset_id] = (
                 balance_events[tx_date].get(tx.to_asset_id, _ZERO) + _dec(tx.to_amount)
             )
-            # Cost tracking: acquisition adds cost
-            if tx.to_value_usd:
-                if tx_date not in cost_events:
-                    cost_events[tx_date] = {}
-                cost_events[tx_date][tx.to_asset_id] = (
-                    cost_events[tx_date].get(tx.to_asset_id, _ZERO) + _dec(tx.to_value_usd)
-                )
         # Outflow
         if tx.from_asset_id and tx.from_amount and tx.from_asset_id not in hidden_asset_ids:
             if tx_date not in balance_events:
@@ -238,33 +231,60 @@ def get_daily_values(
             balance_events[tx_date][tx.from_asset_id] = (
                 balance_events[tx_date].get(tx.from_asset_id, _ZERO) - _dec(tx.from_amount)
             )
-            # Cost tracking: disposal reduces cost proportionally
-            if tx.from_value_usd:
-                if tx_date not in cost_events:
-                    cost_events[tx_date] = {}
-                cost_events[tx_date][tx.from_asset_id] = (
-                    cost_events[tx_date].get(tx.from_asset_id, _ZERO) - _dec(tx.from_value_usd)
-                )
 
-    # 5. Compute initial cost basis from open lots before start_date
-    #    Aggregate per asset (across wallets) for the initial snapshot
+    # 5. Compute cost basis from TaxLots (acquisitions) and LotAssignments (disposals)
+    #    Uses actual lot data for accurate, date-range-independent cost basis.
+    cost_events: dict[date, dict[int, Decimal]] = {}
     initial_cost_per_asset: dict[int, Decimal] = {}
-    pre_lots = (
-        db.query(
-            TaxLot.asset_id,
-            TaxLot.remaining_amount,
-            TaxLot.cost_basis_per_unit,
+
+    # Cost additions: each TaxLot adds cost_basis_usd on its acquired_date.
+    # Exclude transfer_in and wrapping_swap lots — these represent internal
+    # movements where the original lot is disposed without a LotAssignment,
+    # so counting them would double the cost basis.
+    _INTERNAL_SOURCE_TYPES = {"transfer_in", "wrapping_swap"}
+    all_lots = (
+        db.query(TaxLot.asset_id, TaxLot.acquired_date, TaxLot.cost_basis_usd)
+        .filter(
+            TaxLot.asset_id.in_(asset_ids),
+            TaxLot.source_type.notin_(_INTERNAL_SOURCE_TYPES),
         )
-        .filter(TaxLot.is_fully_disposed == False)
         .all()
-    )
-    for lot in pre_lots:
+    ) if asset_ids else []
+
+    for lot in all_lots:
         aid = lot.asset_id
         if aid in hidden_asset_ids:
             continue
-        remaining = _dec(lot.remaining_amount)
-        per_unit = _dec(lot.cost_basis_per_unit)
-        initial_cost_per_asset[aid] = initial_cost_per_asset.get(aid, _ZERO) + remaining * per_unit
+        lot_date = lot.acquired_date.date() if isinstance(lot.acquired_date, datetime) else lot.acquired_date
+        cost = _dec(lot.cost_basis_usd)
+        if lot_date < start_date:
+            initial_cost_per_asset[aid] = initial_cost_per_asset.get(aid, _ZERO) + cost
+        elif lot_date <= end_date:
+            if lot_date not in cost_events:
+                cost_events[lot_date] = {}
+            cost_events[lot_date][aid] = cost_events[lot_date].get(aid, _ZERO) + cost
+
+    # Cost reductions: each LotAssignment reduces cost_basis_usd on disposal date
+    all_disposals = (
+        db.query(LotAssignment.cost_basis_usd, TaxLot.asset_id, Transaction.datetime_utc)
+        .join(TaxLot, LotAssignment.tax_lot_id == TaxLot.id)
+        .join(Transaction, LotAssignment.disposal_tx_id == Transaction.id)
+        .filter(TaxLot.asset_id.in_(asset_ids))
+        .all()
+    ) if asset_ids else []
+
+    for disp in all_disposals:
+        aid = disp.asset_id
+        if aid in hidden_asset_ids:
+            continue
+        disp_date = disp.datetime_utc.date() if isinstance(disp.datetime_utc, datetime) else disp.datetime_utc
+        cost = _dec(disp.cost_basis_usd)
+        if disp_date < start_date:
+            initial_cost_per_asset[aid] = initial_cost_per_asset.get(aid, _ZERO) - cost
+        elif disp_date <= end_date:
+            if disp_date not in cost_events:
+                cost_events[disp_date] = {}
+            cost_events[disp_date][aid] = cost_events[disp_date].get(aid, _ZERO) - cost
 
     # 6. Collapse initial_balances by asset (sum across wallets)
     running_balance: dict[int, Decimal] = {}
@@ -276,6 +296,15 @@ def get_daily_values(
     running_cost: dict[int, Decimal] = dict(initial_cost_per_asset)
 
     # 7. Build sample dates
+    if start_date > end_date:
+        return DailyValuesResponse(
+            data_points=[],
+            summary=DailyValuesSummary(
+                current_value="0.00", total_cost_basis="0.00",
+                unrealized_gain="0.00", unrealized_gain_pct="0.00",
+            ),
+        )
+
     total_days = (end_date - start_date).days + 1
     max_points = 300
     step = max(1, total_days // max_points)
@@ -295,6 +324,13 @@ def get_daily_values(
         last_price[aid] = _ONE
     sample_set = set(sample_dates)
 
+    # Track price data coverage for warnings
+    price_data_start: date | None = None
+    first_holding_date: date | None = None  # first date any non-fiat asset is held
+    fiat_ids = set(
+        row[0] for row in db.query(Asset.id).filter(Asset.is_fiat == True).all()
+    ) if asset_ids else set()
+
     walk_day = start_date
     while walk_day <= end_date:
         # Apply balance/cost events for this day
@@ -311,6 +347,26 @@ def get_daily_values(
             if key in price_map:
                 if aid not in stablecoin_asset_ids:
                     last_price[aid] = price_map[key]
+
+        # Track first date any non-fiat/stablecoin asset is held
+        if first_holding_date is None:
+            held_non_fiat = [
+                aid for aid, qty in running_balance.items()
+                if qty > _ZERO and aid not in fiat_ids and aid not in stablecoin_asset_ids
+            ]
+            if held_non_fiat:
+                first_holding_date = walk_day
+
+        # Check price coverage: find first date where all held non-fiat assets have prices
+        if price_data_start is None:
+            held_non_fiat = [
+                aid for aid, qty in running_balance.items()
+                if qty > _ZERO and aid not in fiat_ids and aid not in stablecoin_asset_ids
+            ]
+            if held_non_fiat:
+                all_have_price = all(last_price.get(aid, _ZERO) > _ZERO for aid in held_non_fiat)
+                if all_have_price:
+                    price_data_start = walk_day
 
         if walk_day in sample_set:
             day_value = _ZERO
@@ -354,6 +410,23 @@ def get_daily_values(
         unrealized = _ZERO
         pct = _ZERO
 
+    # Build warnings about price data gaps — only if prices are missing
+    # for dates when assets are actually held (not just because the chart
+    # range starts before any transactions exist).
+    daily_warnings: list[str] = []
+    price_start_str: str | None = None
+    if (
+        price_data_start is not None
+        and first_holding_date is not None
+        and price_data_start > first_holding_date
+    ):
+        price_start_str = price_data_start.isoformat()
+        daily_warnings.append(
+            f"Price data is unavailable before {price_start_str}. "
+            "Chart values before this date may be inaccurate. "
+            "Click 'Backfill Chart' to fetch historical prices."
+        )
+
     return DailyValuesResponse(
         data_points=data_points,
         summary=DailyValuesSummary(
@@ -362,6 +435,8 @@ def get_daily_values(
             unrealized_gain=str(unrealized.quantize(TWO_PLACES, ROUND_HALF_UP)),
             unrealized_gain_pct=str(pct),
         ),
+        warnings=daily_warnings,
+        price_data_start_date=price_start_str,
     )
 
 
@@ -565,8 +640,8 @@ def get_holdings(db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 
 # Transaction types for aggregation
-_IN_TYPES = {"buy", "deposit"}
-_OUT_TYPES = {"sell", "withdrawal"}
+_IN_TYPES = {"buy"}
+_OUT_TYPES = {"sell"}
 _INCOME_TYPES = {"staking_reward", "interest", "airdrop", "mining"}
 _EXPENSE_TYPES = {"cost"}
 
@@ -577,25 +652,58 @@ def get_portfolio_stats(
     end_date: date = Query(...),
     db: Session = Depends(get_db),
 ):
-    """Aggregate transaction values for the date range."""
+    """Aggregate transaction values for the date range.
+
+    In/Out reflect fiat purchases and sales only (not trades or transfers).
+    """
 
     start_dt = datetime.combine(start_date, datetime.min.time())
     end_dt = datetime.combine(end_date, datetime.max.time())
 
     txs = (
-        db.query(
-            Transaction.type,
-            Transaction.from_value_usd,
-            Transaction.to_value_usd,
-            Transaction.net_value_usd,
-            Transaction.fee_value_usd,
-        )
+        db.query(Transaction)
         .filter(
             Transaction.datetime_utc >= start_dt,
             Transaction.datetime_utc <= end_dt,
         )
         .all()
     )
+
+    # Build a set of fiat/stablecoin asset IDs for fee valuation
+    fiat_stable_ids: set[int] = set()
+    fee_asset_ids = {tx.fee_asset_id for tx in txs if tx.fee_asset_id}
+    if fee_asset_ids:
+        for row in (
+            db.query(Asset.id, Asset.symbol, Asset.is_fiat)
+            .filter(Asset.id.in_(fee_asset_ids))
+            .all()
+        ):
+            if row.is_fiat or row.symbol.upper() in _STABLECOIN_SYMBOLS:
+                fiat_stable_ids.add(row.id)
+
+    # Collect fee asset dates that need price lookups
+    fee_price_lookups: set[tuple[int, date]] = set()
+    for tx in txs:
+        if tx.fee_amount and _dec(tx.fee_amount) > _ZERO and not (_dec(tx.fee_value_usd) > _ZERO):
+            if tx.fee_asset_id and tx.fee_asset_id not in fiat_stable_ids:
+                tx_date = tx.datetime_utc.date() if isinstance(tx.datetime_utc, datetime) else tx.datetime_utc
+                fee_price_lookups.add((tx.fee_asset_id, tx_date))
+
+    # Batch-fetch fee prices
+    fee_prices: dict[tuple[int, date], Decimal] = {}
+    if fee_price_lookups:
+        lookup_aids = {aid for aid, _ in fee_price_lookups}
+        lookup_dates = {d for _, d in fee_price_lookups}
+        price_rows = (
+            db.query(PriceHistory.asset_id, PriceHistory.date, PriceHistory.price_usd)
+            .filter(
+                PriceHistory.asset_id.in_(lookup_aids),
+                PriceHistory.date.in_(lookup_dates),
+            )
+            .all()
+        )
+        for p in price_rows:
+            fee_prices[(p.asset_id, p.date)] = _dec(p.price_usd)
 
     total_in = _ZERO
     total_out = _ZERO
@@ -605,7 +713,6 @@ def get_portfolio_stats(
 
     for tx in txs:
         tx_type = tx.type
-        # Value of the transaction — use the relevant USD valuation
         value = _dec(tx.to_value_usd) or _dec(tx.from_value_usd) or _dec(tx.net_value_usd)
 
         if tx_type in _IN_TYPES:
@@ -616,14 +723,20 @@ def get_portfolio_stats(
             total_income += value
         elif tx_type in _EXPENSE_TYPES:
             total_expenses += _dec(tx.from_value_usd) or value
-        elif tx_type == "trade":
-            # Trades count to both in and out
-            total_in += _dec(tx.to_value_usd) or _ZERO
-            total_out += _dec(tx.from_value_usd) or _ZERO
+        # trades, transfers, deposits, withdrawals: not counted in In/Out
 
-        # Fees
-        fee = _dec(tx.fee_value_usd)
-        total_fees += fee
+        # Fees — resolve USD value from fee_value_usd, fee_amount, or price lookup
+        fee_usd = _dec(tx.fee_value_usd)
+        if fee_usd <= _ZERO and tx.fee_amount:
+            fee_amount = _dec(tx.fee_amount)
+            if fee_amount > _ZERO:
+                if tx.fee_asset_id and tx.fee_asset_id in fiat_stable_ids:
+                    fee_usd = fee_amount
+                elif tx.fee_asset_id:
+                    tx_date = tx.datetime_utc.date() if isinstance(tx.datetime_utc, datetime) else tx.datetime_utc
+                    price = fee_prices.get((tx.fee_asset_id, tx_date), _ZERO)
+                    fee_usd = fee_amount * price
+        total_fees += fee_usd
 
     # Realized gains from lot assignments in the period
     realized = (

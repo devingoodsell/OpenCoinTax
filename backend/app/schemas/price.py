@@ -48,4 +48,12 @@ class BackfillResponse(BaseModel):
     assets_failed: int
     assets_skipped: int = 0
     assets_mapped: int
+    historical_fetched: int = 0
     warnings: list[str] = []
+
+
+class BackfillStatusResponse(BaseModel):
+    status: str  # "idle" | "running" | "completed" | "failed"
+    result: BackfillResponse | None = None
+    error: str | None = None
+    progress: str | None = None

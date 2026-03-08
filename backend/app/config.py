@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     default_tax_year: int = 2025
     long_term_threshold_days: int = 365
     coingecko_api_base: str = "https://api.coingecko.com/api/v3"
+    coincap_api_base: str = "https://rest.coincap.io/v3"
     coingecko_rate_limit_seconds: float = 2.0
     max_upload_size_mb: int = 50
 

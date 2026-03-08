@@ -6,10 +6,12 @@ vi.mock("recharts", () => ({
   ResponsiveContainer: ({ children }: any) => <div data-testid="chart-container">{children}</div>,
   AreaChart: ({ children }: any) => <div data-testid="area-chart">{children}</div>,
   Area: () => <div data-testid="area" />,
+  Line: () => <div data-testid="line" />,
   XAxis: () => <div />,
   YAxis: () => <div />,
   Tooltip: () => <div />,
   CartesianGrid: () => <div />,
+  ReferenceLine: () => <div />,
 }));
 
 import { vi } from "vitest";
@@ -23,9 +25,9 @@ describe("PortfolioChart", () => {
 
   it("renders chart when data provided", () => {
     const chartData = [
-      { date: "2024-01-01", value: 10000 },
-      { date: "2024-02-01", value: 12000 },
-      { date: "2024-03-01", value: 11000 },
+      { date: "2024-01-01", value: 10000, costBasis: 8000 },
+      { date: "2024-02-01", value: 12000, costBasis: 9000 },
+      { date: "2024-03-01", value: 11000, costBasis: 9500 },
     ];
     render(<PortfolioChart chartData={chartData} />);
     expect(screen.getByTestId("chart-container")).toBeInTheDocument();

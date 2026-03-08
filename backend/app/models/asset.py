@@ -12,6 +12,7 @@ class Asset(Base):
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_fiat: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     coingecko_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    coincap_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     decimals: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 

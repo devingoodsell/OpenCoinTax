@@ -74,3 +74,34 @@ input::placeholder,
 textarea::placeholder {
   color: var(--text-muted);
 }
+
+/* Dark scrollbar for main content area */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Hide scrollbar in top navigation */
+nav ::-webkit-scrollbar {
+  display: none;
+}
+nav {
+  scrollbar-width: none;
+}
+
+/* Date/time input calendar icons — use light icons for dark theme */
+input[type="date"],
+input[type="datetime-local"],
+input[type="time"] {
+  color-scheme: dark;
+}

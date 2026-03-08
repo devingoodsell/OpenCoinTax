@@ -18,6 +18,7 @@ class TestIsApiKey:
         assert is_api_key("etherscan_api_key") is True
         assert is_api_key("helius_api_key") is True
         assert is_api_key("coingecko_api_key") is True
+        assert is_api_key("coincap_api_key") is True
 
     def test_non_api_key(self):
         assert is_api_key("default_cost_basis_method") is False
@@ -148,7 +149,11 @@ class TestPriceEndpointWarnings:
             assert len(data["warnings"]) == 1
             assert "UNKNOWN" in data["warnings"][0]
 
-    def test_backfill_returns_warnings(self, client, db, seed_assets, seed_wallets, seed_settings):
+    def test_backfill_returns_running_status(self, client, db, seed_assets, seed_wallets, seed_settings):
+        import time
+        import app.api.prices as prices_mod
+        # Reset backfill state to idle
+        prices_mod._backfill_status = {"status": "idle", "result": None, "error": None}
         mock_result = {
             "total_stored": 0, "assets_processed": 0, "assets_failed": 0,
             "assets_skipped": 0, "assets_mapped": 0,
@@ -158,7 +163,16 @@ class TestPriceEndpointWarnings:
             resp = client.post("/api/prices/backfill")
             assert resp.status_code == 200
             data = resp.json()
-            assert len(data["warnings"]) == 1
+            assert data["status"] in ("running", "completed")
+            # Wait briefly for background thread to complete with mock
+            time.sleep(0.3)
+            status_resp = client.get("/api/prices/backfill/status")
+            assert status_resp.status_code == 200
+            status_data = status_resp.json()
+            assert status_data["status"] == "completed"
+            assert len(status_data["result"]["warnings"]) == 1
+        # Reset state after test
+        prices_mod._backfill_status = {"status": "idle", "result": None, "error": None}
 
     def test_refresh_current_empty_warnings(self, client, db, seed_assets, seed_wallets, seed_settings):
         mock_result = {"updated": 0, "failed": 0, "skipped": 0, "mapped": 0, "warnings": []}

@@ -142,6 +142,41 @@ class TestStoreCoinGeckoPrice:
         assert result is None
 
 
+class TestStoreCoinCapPrice:
+    """Test store_coincap_price doesn't overwrite manual, import, or coingecko."""
+
+    def test_stores_coincap_price(self, db, eth):
+        record = PriceService.store_coincap_price(db, eth.id, date(2023, 3, 1), "2800")
+        assert record is not None
+        assert record.source == "coincap"
+
+    def test_does_not_overwrite_manual(self, db, eth):
+        PriceService.set_manual_price(db, eth.id, date(2023, 3, 1), "3000")
+        result = PriceService.store_coincap_price(db, eth.id, date(2023, 3, 1), "2800")
+        assert result is None
+
+    def test_does_not_overwrite_import(self, db, eth):
+        PriceService.store_import_price(db, eth.id, date(2023, 3, 1), "2900")
+        result = PriceService.store_coincap_price(db, eth.id, date(2023, 3, 1), "2800")
+        assert result is None
+
+    def test_does_not_overwrite_coingecko(self, db, eth):
+        PriceService.store_coingecko_price(db, eth.id, date(2023, 3, 1), "2850")
+        result = PriceService.store_coincap_price(db, eth.id, date(2023, 3, 1), "2800")
+        assert result is None
+
+    def test_overwrites_existing_coincap_price(self, db, eth):
+        PriceService.store_coincap_price(db, eth.id, date(2023, 3, 1), "2800")
+        PriceService.store_coincap_price(db, eth.id, date(2023, 3, 1), "2900")
+        row = (
+            db.query(PriceHistory)
+            .filter_by(asset_id=eth.id, date=date(2023, 3, 1), source="coincap")
+            .first()
+        )
+        assert row is not None
+        assert Decimal(row.price_usd) == Decimal("2900.00000000")
+
+
 class TestGetPricesBatch:
     """Test get_prices_batch returns dict of dates to Decimals."""
 

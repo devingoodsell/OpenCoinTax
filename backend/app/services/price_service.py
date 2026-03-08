@@ -1,6 +1,6 @@
 """Price Data Service — look up, store, and manage historical crypto prices.
 
-Priority order: manual > import > coingecko.
+Priority order: manual > import > coingecko = coincap.
 All monetary values are stored as strings and computed with decimal.Decimal.
 """
 
@@ -15,7 +15,7 @@ from app.models.transaction import Transaction
 
 
 # Priority map — lower number = higher priority
-SOURCE_PRIORITY = {"manual": 1, "import": 2, "coingecko": 3}
+SOURCE_PRIORITY = {"manual": 1, "import": 2, "coingecko": 3, "coincap": 3}
 
 
 class PriceService:
@@ -139,6 +139,59 @@ class PriceService:
 
         return missing
 
+    @staticmethod
+    def get_all_missing_prices(db: Session) -> list[dict]:
+        """Find all (asset, date) pairs across ALL transactions that have no price.
+
+        Same logic as get_missing_prices but without a year filter.
+        Returns a list of dicts with keys: asset_id, asset_symbol, date, transaction_count.
+        """
+        from collections import Counter
+
+        # Load all transactions (no year filter)
+        txns = db.query(Transaction).all()
+
+        # Collect (asset_id, date) pairs from all asset columns
+        pair_counts: Counter[tuple[int, date]] = Counter()
+        for tx in txns:
+            tx_date = tx.datetime_utc.date() if isinstance(tx.datetime_utc, datetime) else tx.datetime_utc
+            for aid in (tx.from_asset_id, tx.to_asset_id, tx.fee_asset_id):
+                if aid is not None:
+                    pair_counts[(aid, tx_date)] += 1
+
+        if not pair_counts:
+            return []
+
+        # Load non-fiat asset ids and build symbol map
+        fiat_ids = {a.id for a in db.query(Asset).filter(Asset.is_fiat == True).all()}  # noqa: E712
+        asset_map = {a.id: a.symbol for a in db.query(Asset).all()}
+
+        # Filter out fiat assets
+        pair_counts = Counter({
+            k: v for k, v in pair_counts.items() if k[0] not in fiat_ids
+        })
+
+        if not pair_counts:
+            return []
+
+        # Find which pairs already have prices
+        existing = set()
+        for ph in db.query(PriceHistory.asset_id, PriceHistory.date).all():
+            existing.add((ph.asset_id, ph.date))
+
+        # Build result for missing pairs
+        missing = []
+        for (aid, d), count in sorted(pair_counts.items(), key=lambda x: (x[0][1], asset_map.get(x[0][0], ""))):
+            if (aid, d) not in existing:
+                missing.append({
+                    "asset_id": aid,
+                    "asset_symbol": asset_map.get(aid, "???"),
+                    "date": d,
+                    "transaction_count": count,
+                })
+
+        return missing
+
     # ------------------------------------------------------------------
     # Write helpers
     # ------------------------------------------------------------------
@@ -202,6 +255,43 @@ class PriceService:
                 date=target_date,
                 price_usd=normalized,
                 source="import",
+            )
+            db.add(existing)
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    @staticmethod
+    def store_coincap_price(
+        db: Session, asset_id: int, target_date: date, price_usd: str | Decimal
+    ) -> PriceHistory | None:
+        """Store a CoinCap price — does NOT overwrite manual, import, or coingecko prices."""
+        higher = (
+            db.query(PriceHistory)
+            .filter(
+                PriceHistory.asset_id == asset_id,
+                PriceHistory.date == target_date,
+                PriceHistory.source.in_(["manual", "import", "coingecko"]),
+            )
+            .first()
+        )
+        if higher:
+            return None
+
+        normalized = PriceService._quantize(price_usd)
+        existing = (
+            db.query(PriceHistory)
+            .filter_by(asset_id=asset_id, date=target_date, source="coincap")
+            .first()
+        )
+        if existing:
+            existing.price_usd = normalized
+        else:
+            existing = PriceHistory(
+                asset_id=asset_id,
+                date=target_date,
+                price_usd=normalized,
+                source="coincap",
             )
             db.add(existing)
         db.commit()

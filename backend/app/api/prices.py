@@ -3,16 +3,19 @@
 Endpoints for querying, storing, and fetching historical crypto prices.
 """
 
+import logging
+import threading
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import get_db, _get_defaults
 from app.models.price_history import PriceHistory
 from app.schemas.price import (
     BackfillResponse,
+    BackfillStatusResponse,
     FetchMissingResponse,
     ManualPriceRequest,
     MissingPriceItem,
@@ -22,7 +25,32 @@ from app.schemas.price import (
 from app.services.coingecko import backfill_historical_prices, fetch_missing_prices, refresh_current_prices
 from app.services.price_service import PriceService
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+# Background backfill state
+_backfill_lock = threading.Lock()
+_backfill_status: dict = {"status": "idle", "result": None, "error": None}
+
+
+def _run_backfill():
+    """Run backfill in a background thread with its own DB session."""
+    global _backfill_status
+    _, session_factory = _get_defaults()
+    db = session_factory()
+    try:
+        def _on_progress(msg: str):
+            global _backfill_status
+            _backfill_status = {**_backfill_status, "progress": msg}
+
+        result = backfill_historical_prices(db, on_progress=_on_progress)
+        _backfill_status = {"status": "completed", "result": result, "error": None, "progress": None}
+    except Exception as exc:
+        logger.exception("Background backfill failed")
+        _backfill_status = {"status": "failed", "result": None, "error": str(exc), "progress": None}
+    finally:
+        db.close()
 
 
 @router.get("/missing/{year}", response_model=list[MissingPriceItem])
@@ -39,15 +67,26 @@ def refresh_current(db: Session = Depends(get_db)):
     return result
 
 
-@router.post("/backfill", response_model=BackfillResponse)
-def backfill_prices(db: Session = Depends(get_db)):
-    """Fetch daily historical prices for all held assets from their earliest lot date.
+@router.post("/backfill", response_model=BackfillStatusResponse)
+def backfill_prices():
+    """Launch backfill of historical prices in a background thread.
 
-    Uses CoinGecko /market_chart/range for efficient bulk fetching.
-    This populates the price history needed for portfolio chart data.
+    Returns immediately with status. Poll GET /backfill/status for results.
     """
-    result = backfill_historical_prices(db)
-    return result
+    global _backfill_status
+    with _backfill_lock:
+        if _backfill_status["status"] == "running":
+            return _backfill_status
+        _backfill_status = {"status": "running", "result": None, "error": None}
+    t = threading.Thread(target=_run_backfill, daemon=True)
+    t.start()
+    return _backfill_status
+
+
+@router.get("/backfill/status", response_model=BackfillStatusResponse)
+def backfill_status():
+    """Check the status of the background backfill job."""
+    return _backfill_status
 
 
 @router.post("/fetch-missing", response_model=FetchMissingResponse)

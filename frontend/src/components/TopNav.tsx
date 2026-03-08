@@ -1,7 +1,6 @@
-import { NavLink } from "react-router-dom";
+import { Link, NavLink } from "react-router-dom";
 
 const links = [
-  { to: "/", label: "Dashboard" },
   { to: "/transactions", label: "Transactions" },
   { to: "/wallets", label: "Wallets" },
   { to: "/import", label: "Import" },
@@ -19,19 +18,16 @@ export default function TopNav() {
         borderBottom: "1px solid var(--border-subtle)",
       }}
     >
-      {/* App logo + title */}
-      <div className="flex items-center gap-2.5 mr-8 whitespace-nowrap">
+      {/* App logo + title — links to dashboard */}
+      <Link to="/" className="flex items-center gap-2.5 mr-8 whitespace-nowrap no-underline">
         <img src="/favicon.svg" alt="OpenCoinTax" width={28} height={28} className="rounded" />
-        <span
-          className="text-lg font-bold"
-          style={{ color: "var(--text-primary)" }}
-        >
+        <span className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>
           Open<span style={{ color: "var(--accent)" }}>Coin</span>Tax
         </span>
-      </div>
+      </Link>
 
       {/* Navigation links */}
-      <div className="flex items-center gap-1 flex-1 overflow-x-auto">
+      <div className="flex items-center gap-1 flex-1 overflow-x-auto scrollbar-none">
         {links.map(({ to, label }) => (
           <NavLink
             key={to}

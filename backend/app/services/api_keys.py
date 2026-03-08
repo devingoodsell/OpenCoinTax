@@ -15,6 +15,7 @@ API_KEY_SETTINGS: set[str] = {
     "etherscan_api_key",
     "helius_api_key",
     "coingecko_api_key",
+    "coincap_api_key",
 }
 
 _MASKED_PATTERN = re.compile(r"^.{0,4}[\u2022]+.{0,4}$")
@@ -24,6 +25,7 @@ _ENV_VAR_MAP: dict[str, str] = {
     "etherscan_api_key": "CRYPTO_TAX_ETHERSCAN_API_KEY",
     "helius_api_key": "CRYPTO_TAX_HELIUS_API_KEY",
     "coingecko_api_key": "CRYPTO_TAX_COINGECKO_API_KEY",
+    "coincap_api_key": "CRYPTO_TAX_COINCAP_API_KEY",
 }
 
 
